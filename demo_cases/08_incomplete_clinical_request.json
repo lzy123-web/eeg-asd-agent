@@ -1,0 +1,7 @@
+{
+  "case_id": "demo-08-incomplete",
+  "input_kind": "incomplete",
+  "modalities": [],
+  "metadata_summary": {},
+  "warnings": ["No usable case input was provided."]
+}

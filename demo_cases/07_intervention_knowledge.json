@@ -1,0 +1,9 @@
+{
+  "case_id": "demo-07-intervention",
+  "input_kind": "knowledge_only",
+  "modalities": ["knowledge"],
+  "metadata_summary": {
+    "topic": "social communication"
+  },
+  "limitations": ["Knowledge candidates are not treatment prescriptions."]
+}

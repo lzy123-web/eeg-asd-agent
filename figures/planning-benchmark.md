@@ -1,0 +1,27 @@
+# Planning Benchmark
+
+30 个冻结规划请求上的四种系统比较。
+
+```mermaid
+flowchart TB
+    D["30 frozen requests<br/>goals, tools, order, stop"] --> B1["Fixed Pipeline"]
+    D --> B2["Deterministic State Planner"]
+    D --> B3["LLM without Manifest"]
+    D --> B4["LLM with Manifest"]
+    B1 --> M["Common Metric Engine"]
+    B2 --> M
+    B3 --> M
+    B4 --> M
+    M --> P["Tool Precision / Recall"]
+    M --> F["Forbidden Invocation"]
+    M --> O["Order Accuracy"]
+    M --> S["Correct Stop"]
+    M --> V["Schema Validity"]
+    M --> L["Plan Length"]
+    classDef data fill:#ECFDF5,stroke:#10B981,color:#111827;
+    classDef model fill:#EFF6FF,stroke:#2563EB,color:#111827;
+    classDef metric fill:#FFF7ED,stroke:#EA580C,color:#111827;
+    class D data;
+    class B1,B2,B3,B4,M model;
+    class P,F,O,S,V,L metric;
+```

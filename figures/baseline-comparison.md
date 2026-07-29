@@ -1,0 +1,28 @@
+# Baseline Comparison
+
+逐步加入 Manifest、Allowlist、Execution State 与 Schema 的主消融结构。
+
+```mermaid
+flowchart LR
+    Q["Frozen request / fixture"] --> A["A: Generic or fixed"]
+    Q --> B["B: Capability Manifest"]
+    Q --> C["C: Manifest + Allowlist"]
+    Q --> D["D: Execution State + Schema"]
+    A --> E["Same evaluator"]
+    B --> E
+    C --> E
+    D --> E
+    E --> M1["Planning safety"]
+    E --> M2["Boundary accuracy"]
+    E --> M3["Report validity"]
+    E --> M4["Cost and consistency"]
+    D -. "full method" .-> H["Primary claims C1 and C2"]
+    classDef input fill:#ECFDF5,stroke:#10B981,color:#111827;
+    classDef variant fill:#EFF6FF,stroke:#2563EB,color:#111827;
+    classDef eval fill:#F5F3FF,stroke:#7C3AED,color:#111827;
+    classDef claim fill:#FFF7ED,stroke:#EA580C,color:#111827;
+    class Q input;
+    class A,B,C,D variant;
+    class E,M1,M2,M3,M4 eval;
+    class H claim;
+```

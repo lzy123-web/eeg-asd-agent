@@ -1,0 +1,11 @@
+{
+  "case_id": "demo-03-features",
+  "input_kind": "raw_eeg",
+  "raw_files": ["synthetic://asd-demo-03"],
+  "modalities": ["EEG"],
+  "metadata_summary": {
+    "sampling_rate_hz": 128,
+    "duration_seconds": 10,
+    "synthetic": true
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "case_id": "demo-01-raw-synthetic",
+  "input_kind": "raw_eeg",
+  "raw_files": ["synthetic://asd-demo-01"],
+  "modalities": ["EEG"],
+  "metadata_summary": {
+    "profile": "offline_fixture_model",
+    "channel_count": 4,
+    "sampling_rate_hz": 128,
+    "duration_seconds": 10,
+    "event_count": 5,
+    "synthetic": true
+  },
+  "limitations": ["Synthetic EEG is demo-only and is not participant evidence."]
+}

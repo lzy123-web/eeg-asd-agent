@@ -1,0 +1,6 @@
+{
+  "workflow": "knowledge_search",
+  "deny_by_default": true,
+  "allowed_categories": ["inspection", "knowledge"],
+  "always_denied_key_patterns": ["raw", "signal", "sample", "path", "file", "secret", "token"]
+}

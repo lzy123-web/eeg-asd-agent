@@ -1,0 +1,10 @@
+{
+  "name": "offline",
+  "planner": "deterministic",
+  "provider": "offline_fixture",
+  "max_steps": 16,
+  "stuck_limit": 2,
+  "retry_limit": 1,
+  "evaluation_mode": "fixture",
+  "scientific_claim_allowed": false
+}

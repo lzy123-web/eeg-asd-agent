@@ -1,0 +1,23 @@
+# Result to Context Safety
+
+完整工具结果如何被规范化、投影并构造成安全 Context。
+
+```mermaid
+flowchart LR
+    T["Full ToolResult<br/>internal data"] --> N["ObservationNormalizer"]
+    N --> O["Observation<br/>typed facts"]
+    O --> A["Workflow Allowlist"]
+    A --> L["LLMVisibleToolResult"]
+    M["Capability limitations"] --> C["ContextBuilder"]
+    S["Executed tool state"] --> C
+    L --> C
+    C --> P["LLM Payload"]
+    T -. "raw EEG / paths / internals" .-> Z["Denied"]
+    A -. "unknown fields" .-> Z
+    classDef source fill:#EFF6FF,stroke:#2563EB,color:#111827;
+    classDef safe fill:#F5F3FF,stroke:#7C3AED,color:#111827;
+    classDef denied fill:#FFF1F2,stroke:#E11D48,color:#111827;
+    class T,N,O source;
+    class A,L,M,S,C,P safe;
+    class Z denied;
+```

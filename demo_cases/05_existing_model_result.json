@@ -1,0 +1,13 @@
+{
+  "case_id": "demo-05-model-result",
+  "input_kind": "model_result",
+  "existing_model_result": {
+    "predicted_label": "2",
+    "source_type": "legacy_external_result"
+  },
+  "modalities": ["EEG"],
+  "metadata_summary": {
+    "source_type": "legacy_external_result"
+  },
+  "limitations": ["The originating model and validation protocol are not verified."]
+}

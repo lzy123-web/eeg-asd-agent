@@ -1,0 +1,10 @@
+{
+  "case_id": "demo-06-existing-report",
+  "input_kind": "medical_report",
+  "existing_report": "既有科研演示报告：观察到社会互动相关能力需要进一步专业评估。",
+  "modalities": ["report"],
+  "metadata_summary": {
+    "report_origin": "legacy_fixture"
+  },
+  "limitations": ["Existing report correctness has not been clinically verified."]
+}

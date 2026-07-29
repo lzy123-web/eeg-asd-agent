@@ -1,0 +1,6 @@
+{
+  "workflow": "full_assessment",
+  "deny_by_default": true,
+  "allowed_categories": ["inspection", "quality", "eeg", "model", "language", "knowledge"],
+  "always_denied_key_patterns": ["raw", "signal", "sample", "path", "file", "secret", "token"]
+}

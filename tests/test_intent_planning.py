@@ -87,3 +87,21 @@ def test_offline_llm_plan_is_strict_json() -> None:
     )
     plan = LLMPlanner(registry, OfflineProvider()).plan(state, RequestedGoal.QUALITY_CHECK)
     assert json.loads(plan.model_dump_json())["schema_version"] == "1.0"
+
+
+def test_full_assessment_with_knowledge_is_not_reduced_to_retrieval() -> None:
+    parser = RuleBasedIntentParser()
+    query = "分析这个 EEG，完成 ASD 辅助评估，并检索相关知识生成报告"
+    assert parser.parse(query) is RequestedGoal.FULL_ASSESSMENT
+    registry = build_default_registry()
+    state = AssessmentCaseState(
+        case_id="multi",
+        input_kind=InputKind.RAW_EEG,
+        raw_files=["synthetic://multi"],
+        user_request=query,
+    )
+    plan = DeterministicPlanner(registry).plan(state, RequestedGoal.FULL_ASSESSMENT)
+    names = [step.tool_name for step in plan.steps]
+    assert "check_model_readiness" in names
+    assert "run_asd_classifier" in names
+    assert "retrieve_asd_knowledge" in names

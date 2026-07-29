@@ -61,6 +61,10 @@ class DeterministicPlanner:
 
         if goal is RequestedGoal.INTERVENTION and "retrieve_intervention_knowledge" not in names:
             names.extend(["retrieve_intervention_knowledge", "generate_intervention_candidates"])
+        if goal is RequestedGoal.FULL_ASSESSMENT and any(
+            word in state.user_request.lower() for word in ("干预", "训练建议", "intervention")
+        ):
+            names.extend(["retrieve_intervention_knowledge", "generate_intervention_candidates"])
         names = [name for name in names if name in self.registry.names()]
         names = [name for name in names if name not in state.completed_workflows]
         if len(names) > self.max_steps:

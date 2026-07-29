@@ -6,10 +6,15 @@ class RuleBasedIntentParser:
 
     def parse(self, request: str) -> RequestedGoal:
         normalized = request.strip().lower()
+        analysis_negated = any(
+            phrase in normalized
+            for phrase in ("不重新分析", "不要分析", "无需分析", "without analysis")
+        )
+        full_requested = any(
+            word in normalized for word in ("评估", "分析", "assessment", "analy", "完整")
+        ) and not analysis_negated
         if any(word in normalized for word in ("确诊", "diagnose", "clinical diagnosis", "处方")):
             return RequestedGoal.UNSUPPORTED
-        if any(word in normalized for word in ("干预", "训练建议", "intervention")):
-            return RequestedGoal.INTERVENTION
         if any(word in normalized for word in ("质量", "quality")):
             return RequestedGoal.QUALITY_CHECK
         if (
@@ -17,17 +22,18 @@ class RuleBasedIntentParser:
             and any(word in normalized for word in ("只", "only", "extract", "提取"))
         ):
             return RequestedGoal.FEATURE_EXTRACTION
-        if any(word in normalized for word in ("知识", "检索", "knowledge", "retrieval", "rag")):
-            return RequestedGoal.KNOWLEDGE_SEARCH
         if (
             "report only" in normalized
             or ("报告" in normalized and "只" in normalized)
             or ("report" in normalized and "only" in normalized)
         ):
             return RequestedGoal.REPORT_ONLY
-        if any(
-            word in normalized
-            for word in ("评估", "分析", "asd", "autism", "eeg", "完整", "assessment")
-        ):
+        if full_requested:
+            return RequestedGoal.FULL_ASSESSMENT
+        if any(word in normalized for word in ("干预", "训练建议", "intervention")):
+            return RequestedGoal.INTERVENTION
+        if any(word in normalized for word in ("知识", "检索", "knowledge", "retrieval", "rag")):
+            return RequestedGoal.KNOWLEDGE_SEARCH
+        if any(word in normalized for word in ("asd", "autism", "eeg")):
             return RequestedGoal.FULL_ASSESSMENT
         return RequestedGoal.UNSUPPORTED

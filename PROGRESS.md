@@ -12,7 +12,7 @@
 - [x] 严格报告、结构修复、Markdown/HTML Renderer、Trace 与 Artifact
 - [x] 8 个 Demo、30 个规划案例、25 个边界案例、20 个报告案例、8 个消融
 - [x] 三种输入状态 E2E
-- [x] 46 个自动测试
+- [x] 47 个自动测试
 - [x] 完整 Benchmark 与完整性审计命令
 - [x] 最终验收：pytest/ruff/mypy/compileall、三条 E2E、Benchmark、隐私扫描全部通过
 - [x] OpenAI-compatible Responses Provider 接口、严格 Schema 与 Token 统计

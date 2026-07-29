@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, Protocol
 
-from eeg_asd_agent.adapters import SeniorKGAdapter, SeniorOOFAdapter
+from eeg_asd_agent.adapters import SeniorKnowledgeAdapter, SeniorOOFAdapter
 from eeg_asd_agent.execution import AllowlistProjector, ContextBuilder
 from eeg_asd_agent.providers import OfflineReportGenerator
 from eeg_asd_agent.reporting import MarkdownRenderer, StructuredReportGenerator
@@ -14,6 +14,7 @@ from eeg_asd_agent.schemas import (
     ModelReadiness,
     RequestedGoal,
     StateUpdate,
+    StructuredKnowledgeResult,
     ToolCapabilityManifest,
     ToolExecutionOutcome,
     ToolResult,
@@ -30,7 +31,7 @@ class ReportProvider(Protocol):
 
 
 class KnowledgeAdapter(Protocol):
-    def retrieve_asd(self, query: str, limit: int = 5) -> list[dict[str, str]]: ...
+    def retrieve(self, query: str, limit: int = 5) -> StructuredKnowledgeResult: ...
 
 
 ALL_CORE_GOALS = [
@@ -144,7 +145,7 @@ def build_core_registry(
 ) -> ToolRegistry:
     registry = ToolRegistry()
     provider = report_provider or OfflineReportGenerator()
-    knowledge = knowledge_adapter or SeniorKGAdapter()
+    knowledge = knowledge_adapter or SeniorKnowledgeAdapter()
     oof = oof_adapter or SeniorOOFAdapter()
 
     inspect_manifest = _manifest(
@@ -402,7 +403,7 @@ def build_core_registry(
             RequestedGoal.REPORT_ONLY,
         ],
         limitations=[
-            "Phase 2 uses a read-only lexical export; this is not yet the senior live RAG runtime.",
+            "The live senior Neo4j RAG runtime was unavailable; retrieval uses an exported local index.",
             "Retrieved background knowledge is not participant-level evidence.",
         ],
     )
@@ -411,23 +412,25 @@ def build_core_registry(
         _: AssessmentCaseState, arguments: dict[str, object]
     ) -> ToolExecutionOutcome:
         query = str(arguments["query"])
-        rows = knowledge.retrieve_asd(query, limit=5)
+        retrieved = knowledge.retrieve(query, limit=5)
         items = [
             {
-                "evidence_id": str(row.get("id", f"kg-{index}")),
-                "title": str(row.get("name", "ASD knowledge entry")),
-                "normalized_summary": str(row.get("description", "")),
-                "source": str(row.get("source", "senior_kg_export")),
-                "relevance": "lexical_export_match",
+                "evidence_id": str(
+                    item.metadata.get("evidence_id", f"knowledge-{index}")
+                ),
+                "title": item.title,
+                "normalized_summary": item.chunk,
+                "source": item.source,
+                "relevance": item.score,
                 "limitations": ["Background knowledge only; not case-specific evidence."],
             }
-            for index, row in enumerate(rows, start=1)
+            for index, item in enumerate(retrieved.items, start=1)
         ]
         status = ToolStatus.SUCCESS if items else ToolStatus.FAILURE
         return _outcome(
             knowledge_manifest,
             status,
-            data={"query": query, "items": items, "mode": "offline_legacy_csv"},
+            data={"query": query, "items": items, "mode": retrieved.mode},
             errors=[] if items else ["no knowledge entries returned"],
         )
 
@@ -441,7 +444,7 @@ def build_core_registry(
     report_manifest = _manifest(
         "generate_report_spec",
         category="report",
-        produced_outputs=["schema_valid", "report_type", "repaired"],
+        produced_outputs=["schema_valid", "report_type", "repaired", "llm_payload"],
         allowlisted_fields=[],
         implementation=report_kind,
         goals=[
@@ -471,6 +474,7 @@ def build_core_registry(
                 "schema_valid": True,
                 "report_type": report.report_type,
                 "repaired": repaired,
+                "llm_payload": context,
             },
             update=StateUpdate(report_spec=report),
         )

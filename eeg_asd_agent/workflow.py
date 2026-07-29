@@ -59,7 +59,13 @@ def run_workflow(
 ) -> dict[str, Path]:
     run_started = perf_counter()
     output_dir.mkdir(parents=True, exist_ok=True)
-    for stale_name in ("observations.jsonl", "trace.jsonl"):
+    for stale_name in (
+        "observations.jsonl",
+        "trace.jsonl",
+        "report_spec.json",
+        "report.md",
+        "report.html",
+    ):
         stale = output_dir / stale_name
         if stale.exists():
             stale.unlink()
@@ -91,8 +97,20 @@ def run_workflow(
     for observation in state.observations:
         store.append_jsonl("observations.jsonl", observation)
 
-    projector = AllowlistProjector(registry)
-    context = ContextBuilder(registry, projector).report_context(state, goal)
+    report_generation_result = next(
+        (item for item in outcome.results if item.tool_name == "generate_report_spec"),
+        None,
+    )
+    recorded_context = (
+        report_generation_result.data.get("llm_payload")
+        if report_generation_result is not None
+        else None
+    )
+    if isinstance(recorded_context, dict):
+        context = recorded_context
+    else:
+        projector = AllowlistProjector(registry)
+        context = ContextBuilder(registry, projector).report_context(state, goal)
     store.write_json("llm_payload.json", context)
     render_result = next(
         (item for item in outcome.results if item.tool_name == "render_report"),

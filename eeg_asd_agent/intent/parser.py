@@ -27,6 +27,17 @@ class RuleBasedIntentParser:
             and any(word in normalized for word in ("只", "only", "extract", "提取"))
         ):
             return RequestedGoal.FEATURE_EXTRACTION
+        knowledge_requested = any(
+            word in normalized for word in ("知识", "检索", "knowledge", "retrieval", "rag")
+        )
+        knowledge_negated = any(
+            phrase in normalized
+            for phrase in ("不检索", "不要检索", "无需检索", "without retrieval", "no rag")
+        )
+        if any(word in normalized for word in ("干预", "训练建议", "intervention")):
+            return RequestedGoal.INTERVENTION
+        if knowledge_requested and not knowledge_negated and not full_requested:
+            return RequestedGoal.KNOWLEDGE_SEARCH
         if (
             "report only" in normalized
             or ("报告" in normalized and "只" in normalized)
@@ -35,9 +46,7 @@ class RuleBasedIntentParser:
             return RequestedGoal.REPORT_ONLY
         if full_requested:
             return RequestedGoal.FULL_ASSESSMENT
-        if any(word in normalized for word in ("干预", "训练建议", "intervention")):
-            return RequestedGoal.INTERVENTION
-        if any(word in normalized for word in ("知识", "检索", "knowledge", "retrieval", "rag")):
+        if knowledge_requested:
             return RequestedGoal.KNOWLEDGE_SEARCH
         if any(word in normalized for word in ("asd", "autism", "eeg")):
             return RequestedGoal.FULL_ASSESSMENT

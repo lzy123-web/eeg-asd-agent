@@ -96,7 +96,7 @@ def test_blocked_readiness_forbids_classifier(tmp_path: Path) -> None:
 
 def test_rag_failure_generates_limited_report(tmp_path: Path) -> None:
     class FailingKnowledge:
-        def retrieve_asd(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+        def retrieve(self, query: str, limit: int = 5) -> object:
             del query, limit
             raise RuntimeError("injected RAG outage")
 
@@ -209,4 +209,6 @@ def test_full_incremental_e2e_writes_grounded_artifacts(tmp_path: Path) -> None:
         "non_diagnostic_rules",
     }
     assert "feature_table" not in payload
+    assert "generate_report_spec" not in payload["executed_workflows"]
+    assert "render_report" not in payload["executed_workflows"]
     assert state.execution_status.value == "completed"

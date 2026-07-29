@@ -52,3 +52,26 @@ complete and a clear need remains.
 
 Reason: A tests the most important adapter truth boundary; C directly evaluates the first frozen
 research claim with three deterministic baseline families.
+
+## 2026-07-29 — Live senior RAG remains unavailable
+
+Decision: do not install or start Neo4j just to make the senior import succeed. Integrate exported
+knowledge through a same-interface deterministic local index.
+
+Reason: the actual probe found both a missing driver and an absent database service. The legacy
+generation path also contains hard-coded secrets and an external service dependency that must not
+enter the closed Agent.
+
+Consequence: every structured result and report uses `mode=offline_local_index`; the live RAG status
+is recorded as unavailable.
+
+## 2026-07-29 — Core planning benchmark is independent and deterministic
+
+Decision: use 18 hand-reviewed cases and exactly three deterministic baselines. Keep expected tools,
+forbidden tools, order, and stop conditions in evaluator-only fields.
+
+Reason: this is sufficient to catch fixed-pipeline overreach and one concrete no-Manifest precondition
+failure without padding the dataset. No Provider credentials are available.
+
+Consequence: the LLM variant is `NOT RUN` with zero calls and no fixture replacement. The result is
+implementation evidence, not a paper-ready LLM superiority result.

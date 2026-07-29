@@ -54,7 +54,7 @@ class NextActionPlanner:
             RequestedGoal.FULL_ASSESSMENT,
             RequestedGoal.QUALITY_CHECK,
             RequestedGoal.READINESS_CHECK,
-        } and "check_data_quality" not in state.completed_workflows:
+        } and state.feature_table and "check_data_quality" not in state.completed_workflows:
             return self._choose(
                 state,
                 "check_data_quality",
@@ -64,9 +64,8 @@ class NextActionPlanner:
 
         if goal in {
             RequestedGoal.FULL_ASSESSMENT,
-            RequestedGoal.QUALITY_CHECK,
             RequestedGoal.READINESS_CHECK,
-        } and "check_model_readiness" not in state.completed_workflows:
+        } and state.feature_table and "check_model_readiness" not in state.completed_workflows:
             return self._choose(
                 state,
                 "check_model_readiness",
@@ -112,7 +111,6 @@ class NextActionPlanner:
         needs_knowledge = goal in {
             RequestedGoal.FULL_ASSESSMENT,
             RequestedGoal.KNOWLEDGE_SEARCH,
-            RequestedGoal.REPORT_ONLY,
         }
         if (
             needs_knowledge

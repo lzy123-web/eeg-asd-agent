@@ -272,6 +272,20 @@ class KnowledgeInterpretation(StrictModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class StructuredKnowledgeItem(StrictModel):
+    title: str
+    source: str
+    chunk: str
+    score: float = Field(ge=0)
+    metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+class StructuredKnowledgeResult(StrictModel):
+    query: str
+    items: list[StructuredKnowledgeItem]
+    mode: str
+
+
 class ProvenanceEntry(StrictModel):
     tool_name: str
     observation_id: str

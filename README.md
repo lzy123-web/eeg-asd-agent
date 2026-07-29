@@ -1,45 +1,79 @@
 # EEG-ASD Workflow Agent
 
-一个面向硕士论文实验的能力感知 EEG-ASD 工作流 Agent。它不是临床诊断系统。
-
-核心路径：
+这是一个用于硕士论文研究的、非临床的增量状态驱动 Agent。当前核心路径接收自然语言
+请求以及 EEG 特征表、既有模型结果或既有报告；它每轮读取最新
+`AssessmentCaseState`，从封闭 Registry 选择一个下一步工具，执行后用显式
+`StateUpdate` 写回 Observation，再决定继续或停止。
 
 ```text
-自然语言请求
-  → AssessmentCaseState
-  → Deterministic/LLM Planner
-  → Closed Tool Registry
-  → Workflow Executor
-  → ObservationNormalizer
-  → deny-by-default AllowlistProjector
-  → execution-grounded ContextBuilder
-  → FinalAssessmentReportSpec
-  → Markdown/HTML Renderer
+User request + Case State
+  → NextActionPlanner.decide(one action)
+  → closed ToolRegistry + Manifest preconditions
+  → ToolExecutionOutcome(ToolResult, StateUpdate)
+  → ObservationNormalizer + StateReducer
+  → decide again / stop
+  → recursive deny-by-default Allowlist
+  → execution-grounded report Context
+  → strict FinalAssessmentReportSpec JSON
+  → deterministic Markdown/HTML Renderer
 ```
 
-## 它接收什么
+LLM/离线报告 Provider 只能看到：用户请求、已执行工作流、白名单结果、对应限制、缺失
+信息、ReportSpec JSON Schema 和非诊断规则。完整特征表、原始 EEG、绝对路径、错误栈、
+密钥、完整 ToolResult 和未声明字段不会进入 Payload。Provider 只能输出合法
+`FinalAssessmentReportSpec` JSON；Renderer 不调用 Provider，也不能添加新事实。
 
-- 合成或外部 EEG 引用；
-- 已有特征表；
-- 既有模型结果；
-- 既有科研报告；
-- 仅知识检索或干预知识请求。
+## 当前核心 Registry
 
-系统先读取 Case State，再决定调用哪些注册工具。它不会让 LLM 临时编写 EEG
-分析代码，也不会开放 Shell、文件写入或任意工具调用。
+| Tool | 作用 | 真实性 |
+|---|---|---|
+| `inspect_case` | 检查输入类型与可用资产 | REAL |
+| `check_data_quality` | 确定性特征有限值检查 | REAL |
+| `check_model_readiness` | 检查 replay/模型是否可执行 | REAL |
+| `inspect_existing_model_result` | 校验并投影既有结果，不重跑模型 | ADAPTER |
+| `research_replay_classifier` | 师兄历史 OOF 行回放 | REPLAY |
+| `retrieve_asd_knowledge` | 师兄导出 KG/论文的本地词法索引 | OFFLINE |
+| `generate_report_spec` | 严格 JSON 报告；默认离线结构生成 | OFFLINE |
+| `render_report` | 确定性 Markdown Renderer | REAL |
+| `stop_with_insufficient_input` | 输入不足时显式停止 | REAL |
+| `stop_with_unsupported_request` | 临床确诊/未注册能力请求停止 | REAL |
 
-## Tool、Allowlist 与 Context
+没有真实 Provider 时使用明确命名的 `OfflineReportGenerator`。它只验证编排、白名单、
+Schema 和降级流程，不能证明真实 LLM 效果。师兄 live Neo4j/Spark RAG 已实际探测但当前
+不可运行；`SeniorKnowledgeAdapter` 始终返回 `mode=offline_local_index`。核心 Registry
+没有 FAKE 模型，也没有把 OOF replay 写成新个体推理。
 
-- Tool 是具有版本化 `ToolCapabilityManifest` 的确定性或受限 Adapter。
-- ToolResult 保存完整执行结果；Observation 是规范化事实；LLMVisibleToolResult
-  是按工作流白名单投影后的结果，三者类型严格分离。
-- Allowlist 采用 deny-by-default；新增字段不会自动进入 LLM。
-- Context 分为 Planning、Tool Selection 和 Report Generation 三类。
-- 原始信号、样本数组、本地路径、密钥和完整内部模型输出永不进入报告 Payload。
+## 三个核心 Case
+
+```bash
+cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
+
+.venv/bin/python -m eeg_asd_agent.cli run \
+  --case demo_cases/core_a_feature_assessment.json \
+  --request "根据现有特征完成 ASD 辅助评估并生成报告。" \
+  --offline --output-dir artifacts/core-a
+
+.venv/bin/python -m eeg_asd_agent.cli run \
+  --case demo_cases/core_b_existing_model.json \
+  --request "只解释当前模型结果并检索相关知识。" \
+  --offline --output-dir artifacts/core-b
+
+.venv/bin/python -m eeg_asd_agent.cli run \
+  --case demo_cases/core_c_readiness_only.json \
+  --request "只检查数据和模型是否具备执行条件，不生成完整报告。" \
+  --offline --output-dir artifacts/core-c
+```
+
+- Case A：quality → readiness → OOF replay → knowledge → ReportSpec → render。
+- Case B：投影既有模型结果 → knowledge → ReportSpec → render；不重跑模型。
+- Case C：quality → readiness → stop；不调用模型、RAG 或报告工具。
+
+每次完整报告运行会生成 `plan.json`（逐轮 Action 历史）、`case_state.json`、
+`tool_results/`、`observations.jsonl`、`llm_payload.json`、`report_spec.json`、
+`report.md`、`report.html`、`trace.jsonl` 与运行统计。Case C 因未请求报告，不生成
+ReportSpec/Renderer 产物。
 
 ## 安装
-
-本机系统 `python3` 为 3.9；项目使用 Codex Runtime 提供的 Python 3.12 创建独立环境：
 
 ```bash
 cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
@@ -47,76 +81,50 @@ cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 .venv/bin/python -m pip install -e '.[dev,eeg]'
 ```
 
-`bishe/.venv/bin/python` 只用于定位 Python 3.12 Runtime，新环境不复用旧依赖。
+旧 `bishe`、师兄工程和底层 EEG 工程保持只读。paicli 只提供 Registry、预算和停滞检测
+的设计参考；本项目不调用其 Java Runtime、Shell、MCP 或编码工具。
 
-## 快速运行
+## 检查工具与 Trace
 
 ```bash
 .venv/bin/python -m eeg_asd_agent.cli tools list
-.venv/bin/python -m eeg_asd_agent.cli tools describe run_asd_classifier
+.venv/bin/python -m eeg_asd_agent.cli tools describe research_replay_classifier
 .venv/bin/python -m eeg_asd_agent.cli profile show
-
-.venv/bin/python -m eeg_asd_agent.cli plan \
-  --case demo_cases/04_feature_table_full_assessment.json \
-  --request "根据现有特征完成 ASD 辅助评估并生成报告" \
-  --offline
-
-.venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/01_raw_eeg_full_assessment.json \
-  --request "分析这个 EEG，完成 ASD 辅助评估，并检索相关知识生成报告" \
-  --offline \
-  --output-dir artifacts/demo
-
-.venv/bin/python -m eeg_asd_agent.cli benchmark all \
-  --offline \
-  --output-dir artifacts/benchmarks
-
-.venv/bin/python -m eeg_asd_agent.cli trace show artifacts/demo/trace.jsonl
-.venv/bin/python -m eeg_asd_agent.cli trace html artifacts/demo/trace.jsonl \
-  --output artifacts/demo/trace-cli.html
-.venv/bin/python -m eeg_asd_agent.cli dashboard build \
-  --artifact-root artifacts --output artifacts/dashboard.html
-.venv/bin/python -m eeg_asd_agent.cli audit-integrity
+.venv/bin/python -m eeg_asd_agent.cli trace show artifacts/core-a/trace.jsonl
 ```
 
-## 可选真实 Provider
+`plan` 子命令保留为 legacy 一次性规划预览；证明增量 Agent 行为应使用 `run` 的
+`action_history` 和 `next_action_decided` Trace。
 
-默认永远使用 OfflineProvider。只有显式关闭 offline 并同时提供环境变量时才会调用
-OpenAI-compatible Responses API：
+## 小规模独立规划 Benchmark
+
+```bash
+.venv/bin/python -m eeg_asd_agent.cli benchmark core-planning \
+  --offline \
+  --output-dir artifacts/benchmarks/core-planning
+```
+
+18 条案例比较 `fixed_pipeline`、`deterministic_state_planner` 和
+`deterministic_without_manifest`。expected 字段只供独立 Evaluator 使用。当前环境无
+Provider 凭据，因此 `llm_planner_with_manifest=NOT RUN`，真实 LLM 调用数为 0，也没有
+Fixture 替代。离线数字只能验证实现与评测协议，不能直接支持 LLM 优越性论文结论。
+
+## 可选真实报告 Provider
+
+OpenAI-compatible Provider 只从环境变量读取凭据。当前核心 `run` 的下一步 Planner 仍是
+确定性的；关闭 offline 只会替换结构化报告 Provider，不能写成“真实 LLM Planner 已
+评测”。
 
 ```bash
 export OPENAI_API_KEY="..."
 export OPENAI_MODEL="<pinned-model-id>"
-export OPENAI_BASE_URL="https://api.openai.com/v1"  # 可选
 
 .venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/04_feature_table_full_assessment.json \
-  --request "根据现有特征完成 ASD 辅助评估并生成报告" \
-  --no-offline --planner llm \
-  --output-dir artifacts/provider-run
+  --case demo_cases/core_a_feature_assessment.json \
+  --request "根据现有特征完成 ASD 辅助评估并生成报告。" \
+  --no-offline \
+  --output-dir artifacts/provider-report
 ```
-
-Provider 使用严格 JSON Schema Structured Outputs；密钥只从环境读取，不写入 Trace、
-Artifact 或仓库。未经真实 Provider 运行的结果不会被标成真实 LLM 实验。
-
-## Demo
-
-1. `01_raw_eeg_full_assessment.json`：合成 EEG → Welch 特征 → fixture 模型 → KG → 报告。
-2. `04_feature_table_full_assessment.json`：师兄特征 → legacy OOF replay → 离线 KG。
-3. `06_existing_medical_report.json`：已有报告 → 跳过 EEG/模型 → 只做知识检索。
-
-合成、fixture、legacy 和 restricted 状态都会写入 Manifest、ToolResult 和报告。
-
-## 与旧项目的区别
-
-- 固定 Pipeline 改为 Case State 驱动的 Planner；
-- 工具调用改为封闭 Registry，不允许发明工具；
-- LLM 不再读取完整 ToolResult；
-- 报告先生成严格 JSON，再由确定性 Renderer 输出；
-- 完整性审计保留为独立命令，不再作为研究主线。
-
-师兄项目只提供受限 OOF 历史回放与离线 KG 数据；paicli 只贡献 Registry、DAG、
-预算和停滞检测的设计思想，没有 Java Runtime 依赖。
 
 ## 质量门
 
@@ -127,5 +135,10 @@ Artifact 或仓库。未经真实 Provider 运行的结果不会被标成真实 
 .venv/bin/python -m compileall -q eeg_asd_agent
 ```
 
-Offline Benchmark 必须显示 `evaluation_mode=fixture` 和
-`scientific_claim_allowed=false`，不能被写成真实 LLM 效果结论。
+研究边界与交接见：
+
+- `docs/research/12_core_truth_audit.md`
+- `docs/research/13_overnight_handoff.md`
+- `docs/research/14_senior_rag_integration.md`
+- `docs/research/15_core_planning_benchmark.md`
+- `docs/research/known_limitations.md`

@@ -6,7 +6,7 @@ from typing import Annotated
 
 import typer
 
-from eeg_asd_agent.benchmarks import BenchmarkSuite
+from eeg_asd_agent.benchmarks import BenchmarkSuite, CorePlanningBenchmark
 from eeg_asd_agent.dashboard import build_dashboard
 from eeg_asd_agent.integrity import audit_integrity
 from eeg_asd_agent.providers import OpenAIResponsesProvider
@@ -124,6 +124,20 @@ def benchmark_planning(
 ) -> None:
     del offline
     _benchmark_command("planning", output_dir)
+
+
+@benchmark_app.command("core-planning")
+def benchmark_core_planning(
+    output_dir: Annotated[Path, typer.Option()] = Path(
+        "artifacts/benchmarks/core-planning"
+    ),
+    offline: Annotated[bool, typer.Option()] = True,
+) -> None:
+    del offline
+    result = CorePlanningBenchmark(
+        PROJECT_ROOT / "benchmark_cases" / "core_planning_cases.jsonl"
+    ).run(output_dir)
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 @benchmark_app.command("boundaries")

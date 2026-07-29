@@ -1,5 +1,68 @@
 # Progress
 
+## 2026-07-29 — Phase 4: final audit and handoff
+
+- [x] README 第一屏改为当前 incremental state-driven 核心路径
+- [x] README 列出核心工具、真实性、Allowlist、Context、ReportSpec、Renderer 与三个 Case
+- [x] 生成 `docs/research/13_overnight_handoff.md`，覆盖要求的 15 项
+- [x] 重跑 Case A/B/C；调用顺序与停止行为符合请求
+- [x] 重跑 18-case core planning Benchmark；真实 LLM 保持 `NOT RUN`
+- [x] Payload 扫描未发现绝对路径、API Key、raw signal 或完整特征矩阵
+- [x] Case C 输出目录清除旧报告产物，不产生 ReportSpec/Markdown
+- [x] 最终 62 pytest、ruff、mypy、compileall、`git diff --check` 全部通过
+- [x] Phase 4 硬门槛通过
+
+最终验收没有新增前端、Multi-Agent、模型训练、真实临床主张或旧服务耦合。
+
+## 2026-07-29 — Phase 3: senior knowledge adapter + core planning benchmark
+
+### Phase 3A
+
+- [x] 定位师兄 Neo4j/Cypher 检索入口、外部生成入口、KG CSV 与论文 CSV
+- [x] 实际探测 live runtime：环境缺少 `neo4j`，且 `127.0.0.1:7687` 未监听
+- [x] 未复制/使用硬编码凭据，未修改师兄只读工程
+- [x] 实现 `SeniorKnowledgeAdapter.retrieve()` → `StructuredKnowledgeResult`
+- [x] fallback 明确标记 `mode=offline_local_index`
+- [x] 来源、无结果降级、核心 Agent E2E 测试通过
+
+### Phase 3C
+
+- [x] 建立 18 条独立规划案例
+- [x] expected 字段只由 `PlanningEvaluator` 读取，不进入 Planner 输入
+- [x] 比较 `fixed_pipeline`、`deterministic_state_planner`、
+  `deterministic_without_manifest`
+- [x] 真实 LLM Planner 标记 `NOT RUN`，调用数 0，未使用 Fixture 替代
+- [x] 输出结果、逐案例 JSONL、错误切片 CSV、配置快照和 Markdown 摘要
+- [x] Phase 3 硬门槛通过
+
+核心离线结果：
+
+| Variant | Required coverage | Forbidden rate | Order | Stop | Precision |
+|---|---:|---:|---:|---:|---:|
+| fixed_pipeline | 0.8611 | 0.8727 | 0.9444 | 0.6667 | 0.4722 |
+| deterministic_state_planner | 1.0000 | 0.0000 | 1.0000 | 1.0000 | 1.0000 |
+| deterministic_without_manifest | 1.0000 | 0.0182 | 1.0000 | 1.0000 | 0.9921 |
+
+执行命令：
+
+```bash
+.venv/bin/python -m eeg_asd_agent.cli benchmark core-planning --offline --output-dir artifacts/benchmarks/core-planning
+.venv/bin/pytest -q
+.venv/bin/ruff check .
+.venv/bin/mypy eeg_asd_agent
+.venv/bin/python -m compileall -q eeg_asd_agent
+```
+
+失败与修复：
+
+- live RAG 不能运行：不仅缺少 Python driver，本机 Neo4j 服务也不存在；没有把“安装依赖”
+  当作接入成功，而是记录准确阻断并建立同接口本地索引。
+- Adapter 首次单测暴露 `_read` 只存在于旧类；补为 Adapter 自己的只读 CSV 方法后通过。
+- 首轮 Benchmark 的 knowledge-only 请求因“只 + 报告”被误判为 report-only；IntentParser
+  增加检索否定判断，并保持多目标完整评估优先级，修复后 state planner 18/18 全覆盖。
+- 上述数字来自人工设计的确定性离线案例，只能验证实现与评测协议，不能直接写成真实 LLM
+  或临床效果结论。
+
 ## 2026-07-29 — Phase 2: incremental core workflow
 
 - [x] `AssessmentCaseState` 统一为 `input_type`、`failed_workflows`、`pending_requirements`、`current_action`、`step_count`、`execution_status`

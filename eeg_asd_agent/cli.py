@@ -12,6 +12,7 @@ from eeg_asd_agent.integrity import audit_integrity
 from eeg_asd_agent.providers import OpenAIResponsesProvider
 from eeg_asd_agent.schemas import AssessmentCaseState
 from eeg_asd_agent.tools.builtin import build_default_registry
+from eeg_asd_agent.tools.core_workflow import build_core_registry
 from eeg_asd_agent.tracing import render_trace_html
 from eeg_asd_agent.workflow import build_plan, run_workflow
 
@@ -36,7 +37,7 @@ def _load_case(path: Path) -> AssessmentCaseState:
 
 @tools_app.command("list")
 def tools_list() -> None:
-    registry = build_default_registry()
+    registry = build_core_registry()
     rows = [
         {
             "name": manifest.name,
@@ -51,7 +52,8 @@ def tools_list() -> None:
 
 @tools_app.command("describe")
 def tools_describe(name: str) -> None:
-    manifest = build_default_registry().describe(name)
+    registry = build_core_registry() if name in build_core_registry().names() else build_default_registry()
+    manifest = registry.describe(name)
     typer.echo(manifest.model_dump_json(indent=2))
 
 
@@ -59,12 +61,12 @@ def tools_describe(name: str) -> None:
 def profile_show() -> None:
     profile = {
         "name": "offline",
-        "planner": "deterministic",
-        "provider": "offline_fixture",
+        "planner": "incremental_state_driven",
+        "provider": "offline_report_generator",
         "max_steps": 16,
         "stuck_limit": 2,
         "report_schema": "FinalAssessmentReportSpec@1.0",
-        "evaluation_mode": "fixture",
+        "evaluation_mode": "offline_structural_validation",
         "scientific_claim_allowed": False,
     }
     typer.echo(json.dumps(profile, ensure_ascii=False, indent=2))

@@ -1,0 +1,19 @@
+{
+  "case_id": "core-a-feature-assessment",
+  "input_type": "feature_table",
+  "feature_table": {
+    "arousal_decay_rate": 0.00515318,
+    "beta_gamma_mean": 5.356931975,
+    "faa_pos_corr": 0.164177486,
+    "higuchi_fd": 1.102631575,
+    "theta_coh": 0.521174325
+  },
+  "modalities": ["EEG"],
+  "metadata_summary": {
+    "senior_row_index": 0,
+    "source_type": "legacy_feature_table"
+  },
+  "limitations": [
+    "Legacy data split and overlap concerns restrict model use to historical replay."
+  ]
+}

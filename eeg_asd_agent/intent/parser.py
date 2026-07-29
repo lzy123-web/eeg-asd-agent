@@ -15,6 +15,11 @@ class RuleBasedIntentParser:
         ) and not analysis_negated
         if any(word in normalized for word in ("确诊", "diagnose", "clinical diagnosis", "处方")):
             return RequestedGoal.UNSUPPORTED
+        if (
+            any(word in normalized for word in ("具备执行条件", "模型是否具备", "readiness"))
+            and any(word in normalized for word in ("检查", "check", "只"))
+        ):
+            return RequestedGoal.READINESS_CHECK
         if any(word in normalized for word in ("质量", "quality")):
             return RequestedGoal.QUALITY_CHECK
         if (

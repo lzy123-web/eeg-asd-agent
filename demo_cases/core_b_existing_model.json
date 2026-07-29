@@ -1,0 +1,14 @@
+{
+  "case_id": "core-b-existing-model",
+  "input_type": "model_result",
+  "existing_model_result": {
+    "model_name": "external_legacy_model",
+    "model_version": "unknown",
+    "readiness_status": "restricted",
+    "predicted_pattern": "historical_pattern_2",
+    "output_meaning": "Existing result supplied by the case; not re-run.",
+    "limitations": ["Originating validation protocol is not verified."]
+  },
+  "modalities": ["EEG"],
+  "limitations": ["The originating model and validation protocol are not verified."]
+}

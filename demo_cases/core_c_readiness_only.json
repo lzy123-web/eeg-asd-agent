@@ -1,0 +1,13 @@
+{
+  "case_id": "core-c-readiness-only",
+  "input_type": "feature_table",
+  "feature_table": {
+    "alpha_power": 0.14,
+    "theta_power": 0.22
+  },
+  "modalities": ["EEG"],
+  "metadata_summary": {
+    "source_type": "feature_fixture_without_model"
+  },
+  "limitations": ["No deployable model is attached to this case."]
+}

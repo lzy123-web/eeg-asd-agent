@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, cast
 
 from eeg_asd_agent.execution import AllowlistProjector, ContextBuilder
 from eeg_asd_agent.intent import RuleBasedIntentParser
@@ -61,7 +61,7 @@ class BenchmarkSuite:
             for case in cases:
                 state = AssessmentCaseState(
                     case_id=str(case["case_id"]),
-                    input_kind=InputKind(str(case["input_kind"])),
+                    input_type=InputKind(str(case["input_kind"])),
                     raw_files=["synthetic://benchmark"] if case["input_kind"] == "raw_eeg" else [],
                     feature_table={"f1": 0.1} if case["input_kind"] == "feature_table" else {},
                     existing_model_result={"predicted_label": "fixture"}
@@ -201,31 +201,33 @@ class BenchmarkSuite:
                     unsupported = bool(set(report) - allowed_top_level)
                     claim_text = " ".join(
                         [
-                            str(report.get("summary", "")),
-                            *[
-                                str(item.get("statement", ""))
-                                for item in report.get("findings", [])
-                                if isinstance(item, dict)
-                            ],
+                            str(report.get("conclusion", "")),
+                            str(
+                                cast(dict[str, Any], report.get("model_assessment", {})).get(
+                                    "summary", ""
+                                )
+                            ),
+                            str(
+                                cast(
+                                    dict[str, Any],
+                                    report.get("knowledge_interpretation", {}),
+                                ).get("summary", "")
+                            ),
                         ]
                     )
                     invented = (
                         "0.87" in claim_text or "0.88" in claim_text or "0.89" in claim_text
                     )
-                    findings = report.get("findings", [])
-                    missing_source = any(
-                        not item.get("source_tools")
-                        for item in findings
-                        if isinstance(item, dict)
-                    )
+                    missing_source = not bool(report.get("provenance"))
                     overstatement = any(
                         phrase in claim_text for phrase in ("诊断为", "确诊", "clinical diagnosis")
                     )
                     limitations = report.get("limitations", [])
-                    section_ids = {
-                        item.get("section_id")
-                        for item in report.get("sections", [])
-                        if isinstance(item, dict)
+                    required_sections = {
+                        "data_summary",
+                        "model_assessment",
+                        "knowledge_interpretation",
+                        "conclusion",
                     }
                     flags["schema_pass_rate"].append(float(schema_valid))
                     flags["unsupported_field_rate"].append(float(unsupported))
@@ -234,7 +236,7 @@ class BenchmarkSuite:
                     flags["diagnostic_overstatement_rate"].append(float(overstatement))
                     flags["limitation_coverage"].append(float(bool(limitations)))
                     flags["section_completeness"].append(
-                        float({"executive_summary", "limitations"} <= section_ids)
+                        float(required_sections <= set(report))
                     )
                 consistency.append(float(len(set(repeated)) == 1))
                 details.append(
@@ -280,17 +282,17 @@ class BenchmarkSuite:
         if variant == "raw_tool_result":
             base["internal_path"] = "/private/raw.edf"
             base["diagnosis"] = "ASD"
-            base["findings"][0]["statement"] = f"诊断为 ASD，概率 {0.87 + repeat * 0.01:.2f}。"
-            base["findings"][0]["source_tools"] = []
+            base["conclusion"] = f"诊断为 ASD，概率 {0.87 + repeat * 0.01:.2f}。"
+            base["provenance"] = []
             base["limitations"] = []
-            base["sections"] = base["sections"][:1]
+            base.pop("knowledge_interpretation", None)
         elif variant == "allowlist":
-            base["findings"][0]["statement"] = "诊断为 ASD。"
-            base["findings"][0]["source_tools"] = []
+            base["conclusion"] = "诊断为 ASD。"
+            base["provenance"] = []
             base["limitations"] = []
-            base["sections"] = base["sections"][:1]
+            base.pop("knowledge_interpretation", None)
         elif variant == "allowlist_capability":
-            base["findings"][0]["statement"] = "结果仅支持科研辅助性质量描述。"
+            base["conclusion"] = "结果仅支持科研辅助性质量描述。"
         return base
 
     @staticmethod

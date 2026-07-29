@@ -5,8 +5,11 @@ from eeg_asd_agent.reporting import HTMLRenderer, MarkdownRenderer, StructuredRe
 def _context() -> dict[str, object]:
     return {
         "case_id": "report-case",
+        "user_request": "生成受限报告",
+        "executed_workflows": ["check_data_quality"],
         "visible_results": [
             {
+                "observation_id": "obs-quality",
                 "tool_name": "check_data_quality",
                 "status": "success",
                 "visible_facts": {"quality_status": "pass"},
@@ -21,7 +24,7 @@ def _context() -> dict[str, object]:
 def test_report_generator_returns_strict_spec() -> None:
     report, raw, repaired = StructuredReportGenerator(OfflineProvider()).generate(_context())
     assert report.case_id == "report-case"
-    assert report.evaluation_mode == "fixture"
+    assert report.report_type == "non_diagnostic_research_assessment"
     assert raw.startswith("{")
     assert repaired is False
 
@@ -40,19 +43,17 @@ def test_renderers_are_stable() -> None:
     assert first == second
     html = HTMLRenderer().render(report)
     assert "<!doctype html>" in html
-    assert "不得将本输出用于临床确诊" in html
+    assert "不支持临床确诊" in html
 
 
 def test_report_contains_sources_and_limitations() -> None:
     report, _, _ = StructuredReportGenerator(OfflineProvider()).generate(_context())
-    assert "check_data_quality" in report.provenance
+    assert [item.tool_name for item in report.provenance] == ["check_data_quality"]
     assert report.limitations
-    assert report.findings[0].source_tools == ["check_data_quality"]
+    assert report.data_summary.source_tools == ["check_data_quality"]
 
 
-def test_provider_repair_is_attempted_once() -> None:
-    valid = OfflineProvider().generate_json("report", {"case_id": "report-case", "visible_results": []})
-
+def test_invalid_provider_output_uses_deterministic_fallback_without_second_call() -> None:
     class RepairProvider:
         calls: list[str] = []
 
@@ -60,12 +61,11 @@ def test_provider_repair_is_attempted_once() -> None:
             self.calls.append(purpose)
             if purpose == "report":
                 return "invalid output"
-            if purpose == "repair":
-                return valid
             raise AssertionError(purpose)
 
     provider = RepairProvider()
     report, _, repaired = StructuredReportGenerator(provider).generate(_context())
     assert report.case_id == "report-case"
+    assert report.report_type == "deterministic_limited_report"
     assert repaired is True
-    assert provider.calls == ["report", "repair"]
+    assert provider.calls == ["report"]

@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -13,7 +13,7 @@ def utc_now() -> datetime:
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, populate_by_name=True)
 
 
 class InputKind(str, Enum):
@@ -28,6 +28,7 @@ class InputKind(str, Enum):
 class RequestedGoal(str, Enum):
     FULL_ASSESSMENT = "full_assessment"
     QUALITY_CHECK = "quality_check"
+    READINESS_CHECK = "readiness_check"
     FEATURE_EXTRACTION = "feature_extraction"
     KNOWLEDGE_SEARCH = "knowledge_search"
     INTERVENTION = "intervention"
@@ -59,8 +60,13 @@ class ToolStatus(str, Enum):
 
 class ImplementationKind(str, Enum):
     REAL = "real"
+    ADAPTER = "adapter"
+    OFFLINE = "offline"
+    FAKE = "fake"
     RESTRICTED_REAL = "restricted_real"
     FIXTURE = "fixture"
+    REPLAY = "replay"
+    STUB = "stub"
     UNAVAILABLE = "unavailable"
 
 
@@ -71,7 +77,11 @@ class ToolCapabilityManifest(StrictModel):
     required_inputs: list[str] = Field(default_factory=list)
     optional_inputs: list[str] = Field(default_factory=list)
     required_state_fields: list[str] = Field(default_factory=list)
-    output_fields: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    produced_outputs: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("produced_outputs", "output_fields"),
+    )
     side_effects: list[str] = Field(default_factory=list)
     supported_goals: list[RequestedGoal] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
@@ -80,8 +90,20 @@ class ToolCapabilityManifest(StrictModel):
     retry_limit: int = Field(default=1, ge=0, le=3)
     timeout_seconds: float = Field(default=30, gt=0, le=600)
     fallback_tool: str | None = None
-    implementation_ref: str
+    implementation_reference: str = Field(
+        validation_alias=AliasChoices("implementation_reference", "implementation_ref")
+    )
     real_or_fake: ImplementationKind
+
+    @property
+    def output_fields(self) -> list[str]:
+        """Compatibility view for the pre-audit manifest API."""
+        return self.produced_outputs
+
+    @property
+    def implementation_ref(self) -> str:
+        """Compatibility view for the pre-audit manifest API."""
+        return self.implementation_reference
 
 
 class ToolResult(StrictModel):
@@ -112,12 +134,46 @@ class Observation(StrictModel):
 
 
 class LLMVisibleToolResult(StrictModel):
+    observation_id: str
     tool_name: str
     status: ToolStatus
     visible_facts: dict[str, Any] = Field(default_factory=dict)
     limitations: list[str] = Field(default_factory=list)
     provenance_labels: list[str] = Field(default_factory=list)
     implementation_kind: ImplementationKind
+
+
+class ActionDecision(StrictModel):
+    action_id: str = Field(default_factory=lambda: uuid4().hex)
+    tool_name: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    reason: str
+    terminal: bool = False
+    based_on_observations: list[str] = Field(default_factory=list)
+
+
+class StateUpdate(StrictModel):
+    """The only supported channel for a tool to change case state."""
+
+    completed_workflows_add: list[str] = Field(default_factory=list)
+    failed_workflows_add: list[str] = Field(default_factory=list)
+    pending_requirements_add: list[str] = Field(default_factory=list)
+    pending_requirements_remove: list[str] = Field(default_factory=list)
+    feature_updates: dict[str, float | int | str | None] = Field(default_factory=dict)
+    model_readiness: ModelReadiness | None = None
+    data_quality: str | None = None
+    existing_model_result: dict[str, Any] | None = None
+    report_spec: FinalAssessmentReportSpec | None = None
+    warnings_add: list[str] = Field(default_factory=list)
+    limitations_add: list[str] = Field(default_factory=list)
+    current_action: str | None = None
+    execution_status: CaseStatus | None = None
+    increment_step_count: int = Field(default=1, ge=0, le=1)
+
+
+class ToolExecutionOutcome(StrictModel):
+    result: ToolResult
+    state_update: StateUpdate
 
 
 class PlanStep(StrictModel):
@@ -162,7 +218,7 @@ class AssessmentCaseState(StrictModel):
     case_id: str
     user_request: str = ""
     requested_goal: RequestedGoal | None = None
-    input_kind: InputKind
+    input_type: InputKind = Field(validation_alias=AliasChoices("input_type", "input_kind"))
     raw_files: list[str] = Field(default_factory=list)
     feature_table: dict[str, float | int | str | None] = Field(default_factory=dict)
     existing_model_result: dict[str, Any] | None = None
@@ -170,44 +226,74 @@ class AssessmentCaseState(StrictModel):
     modalities: list[str] = Field(default_factory=list)
     metadata_summary: dict[str, Any] = Field(default_factory=dict)
     completed_workflows: list[str] = Field(default_factory=list)
+    failed_workflows: list[str] = Field(default_factory=list)
     pending_workflows: list[str] = Field(default_factory=list)
+    pending_requirements: list[str] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     model_readiness: ModelReadiness = ModelReadiness.UNKNOWN
     data_quality: str = "unknown"
     plan: PlanSpec | None = None
-    status: CaseStatus = CaseStatus.PENDING
+    current_action: str | None = None
+    step_count: int = Field(default=0, ge=0)
+    execution_status: CaseStatus = Field(
+        default=CaseStatus.PENDING,
+        validation_alias=AliasChoices("execution_status", "status"),
+    )
+    report_spec: FinalAssessmentReportSpec | None = None
+    action_history: list[ActionDecision] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     trace_id: str = Field(default_factory=lambda: uuid4().hex)
 
+    @property
+    def input_kind(self) -> InputKind:
+        """Compatibility view for pre-audit callers."""
+        return self.input_type
 
-class Finding(StrictModel):
-    finding_id: str
-    title: str
-    statement: str
-    support_status: str
-    source_workflows: list[str] = Field(default_factory=list)
+    @property
+    def status(self) -> CaseStatus:
+        """Compatibility view for pre-audit callers."""
+        return self.execution_status
+
+    @status.setter
+    def status(self, value: CaseStatus) -> None:
+        self.execution_status = value
+
+
+class ReportAssessment(StrictModel):
+    status: str
+    summary: str
     source_tools: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
 
 
-class ReportSection(StrictModel):
-    section_id: str
-    heading: str
-    paragraphs: list[str] = Field(default_factory=list)
-    finding_ids: list[str] = Field(default_factory=list)
+class KnowledgeInterpretation(StrictModel):
+    status: str
+    summary: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ProvenanceEntry(StrictModel):
+    tool_name: str
+    observation_id: str
+    implementation_kind: ImplementationKind
 
 
 class FinalAssessmentReportSpec(StrictModel):
     schema_version: str = "1.0"
     case_id: str
-    title: str
-    summary: str
-    sections: list[ReportSection]
-    findings: list[Finding]
+    report_type: str
+    request_summary: str
+    executed_workflows: list[str]
+    data_summary: ReportAssessment
+    model_assessment: ReportAssessment
+    knowledge_interpretation: KnowledgeInterpretation
+    unavailable_sections: list[str]
     limitations: list[str]
-    safety_notice: str
-    provenance: list[str]
-    evaluation_mode: str
+    conclusion: str
+    human_review_required: bool
+    provenance: list[ProvenanceEntry]
     generated_at: datetime = Field(default_factory=utc_now)
 
+
+AssessmentCaseState.model_rebuild()
+StateUpdate.model_rebuild()

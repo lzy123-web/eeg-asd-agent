@@ -50,14 +50,14 @@ def _manifest(
     return ToolCapabilityManifest(
         name=name,
         category=category,
-        output_fields=output_fields,
+        produced_outputs=output_fields,
         supported_goals=goals or ALL_GOALS,
         unsupported_claims=unsupported_claims
         or ["clinical diagnosis", "treatment prescription", "population-level performance"],
         limitations=limitations or [],
         allowlisted_fields=_visibility(allowlisted, goals),
         retry_limit=retry_limit,
-        implementation_ref=f"eeg_asd_agent.tools.builtin:{name}",
+        implementation_reference=f"eeg_asd_agent.tools.builtin:{name}",
         real_or_fake=implementation,
         required_state_fields=required_state_fields or [],
     )
@@ -552,8 +552,8 @@ def build_default_registry() -> ToolRegistry:
             ToolStatus.SUCCESS,
             {
                 "schema_valid": True,
-                "finding_count": len(report.findings),
-                "section_count": len(report.sections),
+                "finding_count": len(report.provenance),
+                "section_count": 5 - len(report.unavailable_sections),
             },
         )
 

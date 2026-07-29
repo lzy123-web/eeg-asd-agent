@@ -106,16 +106,32 @@ class OfflineProvider:
     def _offline_report(payload: dict[str, object]) -> dict[str, object]:
         case_id = str(payload["case_id"])
         results = list(cast(list[object], payload.get("visible_results", [])))
-        findings: list[dict[str, object]] = []
-        provenance: list[str] = []
+        provenance: list[dict[str, object]] = []
         limitations = [
             "本报告是科研软件的辅助性输出，不能替代临床评估或诊断。",
-            "OfflineProvider 仅验证结构化工作流，不代表真实语言模型效果。",
+            "OfflineReportGenerator 仅验证结构化流程，不代表真实语言模型边界效果。",
         ]
-        for index, raw in enumerate(results, start=1):
+        model_summary = "未执行或没有可白名单化的模型结果。"
+        model_status = "unavailable"
+        model_tools: list[str] = []
+        knowledge_summary = "知识检索未执行或没有返回可白名单化条目。"
+        knowledge_status = "unavailable"
+        evidence_ids: list[str] = []
+        for raw in results:
             result = dict(cast(dict[str, object], raw))
             tool_name = str(result["tool_name"])
-            provenance.append(tool_name)
+            provenance.append(
+                {
+                    "tool_name": tool_name,
+                    "observation_id": str(
+                        result.get(
+                            "observation_id",
+                            cast(list[object], result.get("provenance_labels", ["legacy"]))[0],
+                        )
+                    ),
+                    "implementation_kind": str(result["implementation_kind"]),
+                }
+            )
             result_limitations = [
                 str(item)
                 for item in cast(list[object], result.get("limitations", []))
@@ -125,59 +141,68 @@ class OfflineProvider:
             if status != "success":
                 continue
             visible = dict(cast(dict[str, object], result.get("visible_facts", {})))
-            statement = OfflineProvider._fact_statement(tool_name, visible)
-            if not statement:
-                continue
-            findings.append(
-                {
-                    "finding_id": f"f{index:02d}",
-                    "title": tool_name.replace("_", " "),
-                    "statement": statement,
-                    "support_status": str(result.get("implementation_kind", "fixture")),
-                    "source_workflows": [tool_name],
-                    "source_tools": [tool_name],
-                    "limitations": result_limitations,
-                }
-            )
-        if not findings:
-            findings.append(
-                {
-                    "finding_id": "f01",
-                    "title": "信息不足",
-                    "statement": "当前执行结果不足以形成个体层面的 ASD 辅助评估结论。",
-                    "support_status": "insufficient",
-                    "source_workflows": [],
-                    "source_tools": [],
-                    "limitations": ["需要补充可用输入或人工复核。"],
-                }
-            )
+            if tool_name in {
+                "research_replay_classifier",
+                "inspect_existing_model_result",
+            }:
+                model_status = str(visible.get("readiness_status", "restricted"))
+                pattern = str(visible.get("predicted_pattern", "未提供"))
+                meaning = str(visible.get("output_meaning", "仅限研究解释"))
+                model_summary = f"历史回放模式为 {pattern}；{meaning}"
+                model_tools.append(tool_name)
+            elif tool_name == "check_model_readiness":
+                model_status = str(visible.get("readiness_status", model_status))
+            elif tool_name == "retrieve_asd_knowledge":
+                raw_items = cast(list[object], visible.get("items", []))
+                evidence_ids = [
+                    str(cast(dict[str, object], item).get("evidence_id", ""))
+                    for item in raw_items
+                    if isinstance(item, dict)
+                ]
+                evidence_ids = [item for item in evidence_ids if item]
+                knowledge_status = "available" if evidence_ids else "unavailable"
+                if evidence_ids:
+                    knowledge_summary = "检索到可追踪的离线知识条目；仅用于背景解释。"
         unique_limitations = list(dict.fromkeys(limitations))
         return {
             "schema_version": "1.0",
             "case_id": case_id,
-            "title": "EEG-ASD 工作流辅助评估报告",
-            "summary": "系统按当前 Case State 执行了允许的工具，并仅汇总白名单结果。",
-            "sections": [
-                {
-                    "section_id": "executive_summary",
-                    "heading": "执行摘要",
-                    "paragraphs": [
-                        "报告内容来自已执行工具的投影结果；未执行能力不构成证据。"
-                    ],
-                    "finding_ids": [str(f["finding_id"]) for f in findings],
-                },
-                {
-                    "section_id": "limitations",
-                    "heading": "限制",
-                    "paragraphs": unique_limitations,
-                    "finding_ids": [],
-                },
+            "report_type": "non_diagnostic_research_assessment",
+            "request_summary": str(payload.get("user_request", "EEG-ASD 辅助工作流请求")),
+            "executed_workflows": [
+                str(item) for item in cast(list[object], payload.get("executed_workflows", []))
             ],
-            "findings": findings,
+            "data_summary": {
+                "status": "available" if results else "insufficient",
+                "summary": "仅汇总已执行工具经白名单投影后的结构化结果。",
+                "source_tools": [
+                    str(cast(dict[str, object], item).get("tool_name", ""))
+                    for item in results
+                    if isinstance(item, dict)
+                ],
+            },
+            "model_assessment": {
+                "status": model_status,
+                "summary": model_summary,
+                "source_tools": model_tools,
+            },
+            "knowledge_interpretation": {
+                "status": knowledge_status,
+                "summary": knowledge_summary,
+                "evidence_ids": evidence_ids,
+            },
+            "unavailable_sections": [
+                section
+                for section, unavailable in (
+                    ("model_assessment", model_status == "unavailable"),
+                    ("knowledge_interpretation", knowledge_status == "unavailable"),
+                )
+                if unavailable
+            ],
             "limitations": unique_limitations,
-            "safety_notice": "不得将本输出用于临床确诊、排除诊断或自动治疗决策。",
-            "provenance": list(dict.fromkeys(provenance)),
-            "evaluation_mode": "fixture",
+            "conclusion": "当前结果只能用于研究工作流辅助与人工复核，不支持临床确诊。",
+            "human_review_required": True,
+            "provenance": provenance,
         }
 
     @staticmethod
@@ -199,3 +224,9 @@ class OfflineProvider:
         if tool_name == "generate_intervention_candidates":
             return f"生成 {visible.get('candidate_count', 0)} 条知识型候选建议。"
         return ""
+
+
+class OfflineReportGenerator(OfflineProvider):
+    """Explicit deterministic provider for offline ReportSpec structure validation."""
+
+    name = "offline_report_generator"

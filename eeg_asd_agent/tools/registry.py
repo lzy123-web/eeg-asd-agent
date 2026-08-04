@@ -57,11 +57,14 @@ class ToolRegistry:
             if not self._state_has_value(state, field)
         ]
         checks = {
+            "raw_eeg_present": bool(state.raw_files),
             "feature_table_present": bool(state.feature_table),
             "model_result_absent": state.existing_model_result is None,
             "model_result_present": state.existing_model_result is not None,
             "model_readiness_not_blocked": state.model_readiness.value != "blocked",
             "model_checked": state.model_readiness.value != "unknown",
+            "data_quality_pass": state.data_quality == "pass",
+            "rag_query_present": bool(state.rag_query),
             "report_spec_present": state.report_spec is not None,
             "request_supported": state.requested_goal is not None
             and state.requested_goal.value != "unsupported",
@@ -77,6 +80,9 @@ class ToolRegistry:
     ) -> ToolResult:
         tool = self._get(name)
         args = arguments or {}
+        unexpected = set(args) - set(tool.manifest.required_inputs) - set(tool.manifest.optional_inputs)
+        if unexpected:
+            raise ToolPreconditionError(f"unexpected arguments: {sorted(unexpected)}")
         missing = set(tool.manifest.required_inputs) - set(args)
         if missing:
             raise ToolPreconditionError(f"missing required arguments: {sorted(missing)}")
@@ -121,6 +127,9 @@ class ToolRegistry:
         """Execute a tool and require an explicit state update for incremental runs."""
         tool = self._get(name)
         args = arguments or {}
+        unexpected = set(args) - set(tool.manifest.required_inputs) - set(tool.manifest.optional_inputs)
+        if unexpected:
+            raise ToolPreconditionError(f"unexpected arguments: {sorted(unexpected)}")
         missing = set(tool.manifest.required_inputs) - set(args)
         if missing:
             raise ToolPreconditionError(f"missing required arguments: {sorted(missing)}")

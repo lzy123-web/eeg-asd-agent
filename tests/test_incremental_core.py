@@ -68,9 +68,10 @@ def test_feature_input_skips_raw_eeg_tools_and_redecides_from_observation(
     assert "inspect_eeg" not in actions
     assert "preprocess_eeg" not in actions
     readiness_index = actions.index("check_model_readiness")
-    replay = state.action_history[readiness_index + 1]
-    assert replay.tool_name == "research_replay_classifier"
-    assert len(replay.based_on_observations) == 3
+    baseline = state.action_history[readiness_index + 1]
+    assert baseline.tool_name == "run_asd_baseline_model"
+    assert len(baseline.based_on_observations) == 3
+    assert "research_replay_classifier" not in actions
 
 
 def test_existing_model_result_is_not_rerun(tmp_path: Path) -> None:
@@ -147,7 +148,8 @@ def test_nested_allowlist_is_deny_by_default() -> None:
                 {
                     "evidence_id": "e1",
                     "title": "Allowed",
-                    "normalized_summary": "Allowed summary",
+                    "retrieved_chunk": "Allowed source chunk",
+                    "summary": "Allowed summary",
                     "source": "source",
                     "relevance": "match",
                     "limitations": ["background only"],

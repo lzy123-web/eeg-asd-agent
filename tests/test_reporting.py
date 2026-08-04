@@ -53,7 +53,7 @@ def test_report_contains_sources_and_limitations() -> None:
     assert report.data_summary.source_tools == ["check_data_quality"]
 
 
-def test_invalid_provider_output_uses_deterministic_fallback_without_second_call() -> None:
+def test_invalid_provider_output_attempts_one_repair_then_uses_fallback() -> None:
     class RepairProvider:
         calls: list[str] = []
 
@@ -68,4 +68,4 @@ def test_invalid_provider_output_uses_deterministic_fallback_without_second_call
     assert report.case_id == "report-case"
     assert report.report_type == "deterministic_limited_report"
     assert repaired is True
-    assert provider.calls == ["report"]
+    assert provider.calls == ["report", "repair"]

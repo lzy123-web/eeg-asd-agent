@@ -163,6 +163,7 @@ class StateUpdate(StrictModel):
     model_readiness: ModelReadiness | None = None
     data_quality: str | None = None
     existing_model_result: dict[str, Any] | None = None
+    rag_query: str | None = None
     report_spec: FinalAssessmentReportSpec | None = None
     warnings_add: list[str] = Field(default_factory=list)
     limitations_add: list[str] = Field(default_factory=list)
@@ -223,6 +224,7 @@ class AssessmentCaseState(StrictModel):
     feature_table: dict[str, float | int | str | None] = Field(default_factory=dict)
     existing_model_result: dict[str, Any] | None = None
     existing_report: str | None = None
+    rag_query: str | None = None
     modalities: list[str] = Field(default_factory=list)
     metadata_summary: dict[str, Any] = Field(default_factory=dict)
     completed_workflows: list[str] = Field(default_factory=list)
@@ -273,17 +275,41 @@ class KnowledgeInterpretation(StrictModel):
 
 
 class StructuredKnowledgeItem(StrictModel):
+    evidence_id: str
     title: str
     source: str
-    chunk: str
-    score: float = Field(ge=0)
+    retrieved_chunk: str
+    summary: str
+    relevance: float = Field(ge=0)
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    limitations: list[str] = Field(default_factory=list)
+
+    @property
+    def chunk(self) -> str:
+        """Compatibility view for adapters written before the evidence contract."""
+        return self.retrieved_chunk
+
+    @property
+    def score(self) -> float:
+        return self.relevance
 
 
 class StructuredKnowledgeResult(StrictModel):
     query: str
     items: list[StructuredKnowledgeItem]
     mode: str
+
+
+class EEGProcessingConfig(StrictModel):
+    version: str = "eeg-v1.0"
+    target_sfreq_hz: int = Field(default=128, ge=64, le=1024)
+    highpass_hz: float = Field(default=1.0, ge=0.1, lt=10)
+    lowpass_hz: float = Field(default=40.0, gt=10, le=100)
+    notch_hz: float = Field(default=50.0, gt=0, le=60)
+    epoch_seconds: float = Field(default=2.0, ge=0.5, le=30)
+    max_abs_amplitude_uv: float = Field(default=250.0, gt=0)
+    min_duration_seconds: float = Field(default=4.0, gt=0)
+    min_channels: int = Field(default=2, ge=1)
 
 
 class ProvenanceEntry(StrictModel):

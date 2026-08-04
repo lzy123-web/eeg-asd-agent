@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -124,10 +126,10 @@ class SeniorKnowledgeAdapter:
 
     The live Neo4j retrieval code was inspected and probed, but cannot run in the
     current environment. This adapter therefore preserves a stable structured
-    interface while reporting ``mode=offline_local_index``.
+    interface while reporting ``mode=offline_bm25_local_export``.
     """
 
-    mode = "offline_local_index"
+    mode = "offline_bm25_local_export"
 
     def __init__(self, root: Path | None = None) -> None:
         configured = os.environ.get("EEG_ASD_SENIOR_ROOT")
@@ -139,32 +141,52 @@ class SeniorKnowledgeAdapter:
         tokens = self._tokens(query)
         if not tokens or limit <= 0:
             return StructuredKnowledgeResult(query=query, items=[], mode=self.mode)
+        documents = self._load_documents()
+        tokenized = [self._document_tokens(document) for document in documents]
+        average_length = sum(len(items) for items in tokenized) / max(1, len(tokenized))
+        frequencies = {
+            token: sum(token in set(items) for items in tokenized) for token in tokens
+        }
         ranked: list[tuple[float, dict[str, str]]] = []
-        for document in self._load_documents():
-            title = document["title"].lower()
-            text = f"{title} {document['chunk'].lower()} {document['tags'].lower()}"
-            score = sum(
-                (3.0 if token in title else 0.0) + min(2.0, float(text.count(token)))
-                for token in tokens
-            )
+        for document, document_tokens in zip(documents, tokenized, strict=True):
+            counts = Counter(document_tokens)
+            length = len(document_tokens)
+            score = 0.0
+            for token in tokens:
+                frequency = counts[token]
+                if frequency == 0:
+                    continue
+                document_frequency = frequencies[token]
+                inverse_document_frequency = math.log(
+                    1 + (len(documents) - document_frequency + 0.5) / (document_frequency + 0.5)
+                )
+                denominator = frequency + 1.5 * (1 - 0.75 + 0.75 * length / max(1, average_length))
+                score += inverse_document_frequency * frequency * 2.5 / denominator
+                if token in self._tokens(document["title"]):
+                    score += inverse_document_frequency
             if score > 0:
-                ranked.append((score / max(1.0, float(len(tokens))), document))
+                ranked.append((score, document))
         ranked.sort(key=lambda item: (-item[0], item[1]["id"]))
         items = [
             StructuredKnowledgeItem(
+                evidence_id=document["id"] or f"local-{index}",
                 title=document["title"],
                 source=document["source"],
-                chunk=document["chunk"][:800],
-                score=round(score, 6),
+                retrieved_chunk=document["chunk"][:800],
+                summary=document["chunk"][:360],
+                relevance=round(score, 6),
                 metadata={
-                    "evidence_id": document["id"],
                     "source_file": document["source_file"],
                     "year": document.get("year", ""),
                     "doi": document.get("doi", ""),
                     "mode": self.mode,
                 },
+                limitations=[
+                    "Locally exported background knowledge; not participant-level evidence.",
+                    "Retrieval relevance is lexical BM25 and has not been clinically validated.",
+                ],
             )
-            for score, document in ranked[:limit]
+            for index, (score, document) in enumerate(ranked[:limit], start=1)
         ]
         return StructuredKnowledgeResult(query=query, items=items, mode=self.mode)
 
@@ -215,6 +237,21 @@ class SeniorKnowledgeAdapter:
             tokens.update({"asd", "autism"})
         if "eeg" in lowered or "脑电" in query:
             tokens.update({"eeg", "electroencephal"})
+        if "能力" in query or "ability" in lowered:
+            tokens.update({"ability", "cognitive", "social"})
+        if "communication" in lowered or "沟通" in query:
+            tokens.update({"communication", "language", "social"})
+        return tokens
+
+    @classmethod
+    def _document_tokens(cls, document: dict[str, str]) -> list[str]:
+        text = f"{document['title']} {document['chunk']} {document['tags']}"
+        tokens = [
+            token.lower()
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]+|[\u4e00-\u9fff]{2,}", text)
+            if len(token) > 1
+        ]
+        tokens.extend(token for token in cls._tokens(text) if token not in tokens)
         return tokens
 
     @staticmethod

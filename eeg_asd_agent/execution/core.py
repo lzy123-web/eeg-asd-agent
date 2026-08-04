@@ -132,8 +132,11 @@ class ContextBuilder:
             "input_type": state.input_type.value,
             "modalities": state.modalities,
             "completed_workflows": state.completed_workflows,
+            "failed_workflows": state.failed_workflows,
             "model_readiness": state.model_readiness.value,
             "data_quality": state.data_quality,
+            "step_count": state.step_count,
+            "execution_status": state.execution_status.value,
         }
 
     def tool_selection_context(self, state: AssessmentCaseState) -> dict[str, object]:
@@ -167,7 +170,9 @@ class ContextBuilder:
         }
         return {
             "case_id": state.case_id,
-            "user_request": state.user_request,
+            "user_request": re.sub(
+                r"(?:/[^\s,;]+)+", "[LOCAL_PATH_REDACTED]", state.user_request
+            )[:1000],
             "executed_workflows": state.completed_workflows,
             "visible_results": [item.model_dump(mode="json") for item in visible],
             "tool_limitations": [
@@ -330,6 +335,8 @@ class StateReducer:
             state.data_quality = update.data_quality
         if update.existing_model_result is not None:
             state.existing_model_result = update.existing_model_result
+        if update.rag_query is not None:
+            state.rag_query = update.rag_query
         if update.report_spec is not None:
             state.report_spec = update.report_spec
         state.warnings = StateReducer._merge(state.warnings, update.warnings_add)

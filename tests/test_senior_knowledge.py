@@ -32,12 +32,13 @@ def test_senior_knowledge_adapter_returns_structured_local_index(
         limit=2,
     )
     assert isinstance(result, StructuredKnowledgeResult)
-    assert result.mode == "offline_local_index"
+    assert result.mode == "offline_bm25_local_export"
     assert result.query == "EEG autism"
     assert result.items
     assert all(item.title and item.source and item.chunk for item in result.items)
     assert all(item.score > 0 for item in result.items)
-    assert all(item.metadata["mode"] == "offline_local_index" for item in result.items)
+    assert all(item.metadata["mode"] == "offline_bm25_local_export" for item in result.items)
+    assert all(item.evidence_id and item.summary and item.limitations for item in result.items)
     assert all(item.metadata["source_file"] for item in result.items)
 
 
@@ -48,5 +49,5 @@ def test_senior_knowledge_adapter_empty_result_degrades_cleanly(
         "term_that_does_not_exist",
         limit=3,
     )
-    assert result.mode == "offline_local_index"
+    assert result.mode == "offline_bm25_local_export"
     assert result.items == []

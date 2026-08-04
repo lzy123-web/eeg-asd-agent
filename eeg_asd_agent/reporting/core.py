@@ -23,7 +23,10 @@ class StructuredReportGenerator:
             return FinalAssessmentReportSpec.model_validate_json(raw), raw, False
         except Exception:
             try:
-                repaired = self._safe_repair(raw)
+                repair_payload = dict(context)
+                repair_payload["raw_output"] = raw
+                repaired_raw = self.provider.generate_json("repair", repair_payload)
+                repaired = self._safe_repair(repaired_raw)
                 return FinalAssessmentReportSpec.model_validate_json(repaired), raw, True
             except Exception:
                 return self._deterministic_limited_report(context), raw, True
@@ -119,6 +122,13 @@ class MarkdownRenderer:
             "",
             report.knowledge_interpretation.summary,
             "",
+            "### Evidence IDs",
+            "",
+            *(
+                [f"- `{item}`" for item in report.knowledge_interpretation.evidence_ids]
+                or ["- 无可用 Evidence ID"]
+            ),
+            "",
             "## 结论",
             "",
             report.conclusion,
@@ -152,6 +162,9 @@ code{background:#eef2f7;padding:2px 5px;border-radius:4px}
 <h2>数据摘要</h2><p>{{ report.data_summary.summary }}</p>
 <h2>模型评估</h2><p>{{ report.model_assessment.summary }}</p>
 <h2>知识解释</h2><p>{{ report.knowledge_interpretation.summary }}</p>
+<h3>Evidence IDs</h3><ul>
+{% for item in report.knowledge_interpretation.evidence_ids %}<li><code>{{ item }}</code></li>{% endfor %}
+</ul>
 <h2>结论</h2><p class="notice">{{ report.conclusion }}</p>
 <h2>限制</h2><ul>{% for item in report.limitations %}<li>{{ item }}</li>{% endfor %}</ul>
 </body></html>"""

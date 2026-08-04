@@ -1,0 +1,40 @@
+{
+  "name": "eeg_asd_v1",
+  "planner": {
+    "online": "llm_incremental_next_action",
+    "offline_fallback": "deterministic_incremental_state_driven",
+    "max_steps": 16,
+    "stuck_limit": 2
+  },
+  "eeg": {
+    "version": "eeg-v1.0",
+    "target_sfreq_hz": 128,
+    "highpass_hz": 1.0,
+    "lowpass_hz": 40.0,
+    "notch_hz": 50.0,
+    "epoch_seconds": 2.0,
+    "max_abs_amplitude_uv": 250.0,
+    "min_duration_seconds": 4.0,
+    "min_channels": 2
+  },
+  "model": {
+    "version": "senior-mlp-ability-v1",
+    "mode": "restricted_current_case_inference",
+    "runtime": "numpy_checkpoint_reader",
+    "clinical_claim_allowed": false
+  },
+  "rag": {
+    "mode": "offline_bm25_local_export",
+    "live_senior_runtime": "unavailable"
+  },
+  "provider": {
+    "api": "openai_compatible_responses",
+    "model_env": "OPENAI_MODEL",
+    "base_url_env": "OPENAI_BASE_URL",
+    "temperature_env": "OPENAI_TEMPERATURE",
+    "default_temperature": 0.0,
+    "secret_env": "OPENAI_API_KEY"
+  },
+  "evaluation_mode": "offline_structural_validation_unless_provider_configured",
+  "scientific_claim_allowed": false
+}

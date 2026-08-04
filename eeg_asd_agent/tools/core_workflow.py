@@ -3,7 +3,12 @@ from __future__ import annotations
 import math
 from typing import Any, Protocol
 
-from eeg_asd_agent.adapters import SeniorKnowledgeAdapter, SeniorOOFAdapter
+from eeg_asd_agent.adapters import (
+    EEGSignalAdapter,
+    SeniorKnowledgeAdapter,
+    SeniorMLPBaselineAdapter,
+    SeniorOOFAdapter,
+)
 from eeg_asd_agent.execution import AllowlistProjector, ContextBuilder
 from eeg_asd_agent.providers import OfflineReportGenerator
 from eeg_asd_agent.reporting import MarkdownRenderer, StructuredReportGenerator
@@ -47,12 +52,14 @@ ALL_CORE_GOALS = [
 def _manifest(
     name: str,
     *,
+    version: str = "1.0",
     category: str,
     produced_outputs: list[str],
     allowlisted_fields: list[str],
     implementation: ImplementationKind,
     goals: list[RequestedGoal] | None = None,
     required_inputs: list[str] | None = None,
+    optional_inputs: list[str] | None = None,
     required_state_fields: list[str] | None = None,
     preconditions: list[str] | None = None,
     limitations: list[str] | None = None,
@@ -61,8 +68,10 @@ def _manifest(
     active_goals = goals or ALL_CORE_GOALS
     return ToolCapabilityManifest(
         name=name,
+        version=version,
         category=category,
         required_inputs=required_inputs or [],
+        optional_inputs=optional_inputs or [],
         required_state_fields=required_state_fields or [],
         preconditions=preconditions or [],
         produced_outputs=produced_outputs,
@@ -142,11 +151,15 @@ def build_core_registry(
     report_provider: ReportProvider | None = None,
     knowledge_adapter: KnowledgeAdapter | None = None,
     oof_adapter: SeniorOOFAdapter | None = None,
+    eeg_adapter: EEGSignalAdapter | None = None,
+    baseline_adapter: SeniorMLPBaselineAdapter | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     provider = report_provider or OfflineReportGenerator()
     knowledge = knowledge_adapter or SeniorKnowledgeAdapter()
     oof = oof_adapter or SeniorOOFAdapter()
+    eeg = eeg_adapter or EEGSignalAdapter()
+    baseline = baseline_adapter or SeniorMLPBaselineAdapter()
 
     inspect_manifest = _manifest(
         "inspect_case",
@@ -176,6 +189,268 @@ def build_core_registry(
         )
 
     registry.register(FunctionTool(inspect_manifest, inspect_case))
+
+    eeg_goals = [
+        RequestedGoal.FULL_ASSESSMENT,
+        RequestedGoal.QUALITY_CHECK,
+        RequestedGoal.FEATURE_EXTRACTION,
+    ]
+    inspect_eeg_manifest = _manifest(
+        "inspect_eeg",
+        version=eeg.version,
+        category="eeg",
+        produced_outputs=[
+            "pipeline_version",
+            "source_format",
+            "synthetic",
+            "channel_count",
+            "sample_count",
+            "sampling_rate_hz",
+            "duration_seconds",
+            "event_count",
+            "unit_assumption",
+        ],
+        allowlisted_fields=[
+            "pipeline_version",
+            "source_format",
+            "synthetic",
+            "channel_count",
+            "sample_count",
+            "sampling_rate_hz",
+            "duration_seconds",
+            "event_count",
+            "unit_assumption",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=eeg_goals,
+        preconditions=["raw_eeg_present"],
+        limitations=[
+            "Synthetic recordings are workflow fixtures and are not participant evidence.",
+            "V1 supports synthetic URI, NPZ, MAT, and equal-rate EDF input only.",
+        ],
+    )
+
+    def inspect_eeg(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        inspected = eeg.inspect(state)
+        limitations = (
+            ["This recording is synthetic and can validate only software execution."]
+            if inspected["synthetic"]
+            else []
+        )
+        return _outcome(
+            inspect_eeg_manifest,
+            ToolStatus.SUCCESS,
+            data=inspected,
+            limitations=limitations,
+        )
+
+    registry.register(FunctionTool(inspect_eeg_manifest, inspect_eeg))
+
+    eeg_quality_manifest = _manifest(
+        "check_eeg_quality",
+        version=eeg.version,
+        category="quality",
+        produced_outputs=[
+            "quality_status",
+            "finite_sample_ratio",
+            "flat_channel_count",
+            "max_abs_amplitude_uv",
+            "issue_count",
+            "issues",
+            "synthetic",
+            "pipeline_version",
+        ],
+        allowlisted_fields=[
+            "quality_status",
+            "finite_sample_ratio",
+            "flat_channel_count",
+            "max_abs_amplitude_uv",
+            "issue_count",
+            "issues",
+            "synthetic",
+            "pipeline_version",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=eeg_goals,
+        preconditions=["raw_eeg_present"],
+        limitations=["Signal thresholds are engineering gates, not clinical EEG interpretation."],
+    )
+
+    def check_eeg_quality(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        checked = eeg.quality(state)
+        return _outcome(
+            eeg_quality_manifest,
+            ToolStatus.SUCCESS,
+            data=checked,
+            update=StateUpdate(data_quality=str(checked["quality_status"])),
+        )
+
+    registry.register(FunctionTool(eeg_quality_manifest, check_eeg_quality))
+
+    preprocess_manifest = _manifest(
+        "preprocess_eeg",
+        version=eeg.version,
+        category="eeg",
+        produced_outputs=[
+            "pipeline_version",
+            "source_sampling_rate_hz",
+            "target_sampling_rate_hz",
+            "channel_count",
+            "sample_count",
+            "highpass_hz",
+            "lowpass_hz",
+            "notch_hz",
+            "normalization",
+            "synthetic",
+        ],
+        allowlisted_fields=[
+            "pipeline_version",
+            "target_sampling_rate_hz",
+            "channel_count",
+            "highpass_hz",
+            "lowpass_hz",
+            "notch_hz",
+            "normalization",
+            "synthetic",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
+        preconditions=["raw_eeg_present", "data_quality_pass"],
+        limitations=["Processing parameters are fixed by the versioned eeg-v1.0 profile."],
+    )
+
+    def preprocess_eeg(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        return _outcome(
+            preprocess_manifest,
+            ToolStatus.SUCCESS,
+            data=eeg.preprocess_summary(state),
+        )
+
+    registry.register(FunctionTool(preprocess_manifest, preprocess_eeg))
+
+    events_manifest = _manifest(
+        "extract_events",
+        version=eeg.version,
+        category="eeg",
+        produced_outputs=[
+            "event_count",
+            "event_mode",
+            "event_codes",
+            "pipeline_version",
+            "synthetic",
+        ],
+        allowlisted_fields=[
+            "event_count",
+            "event_mode",
+            "event_codes",
+            "pipeline_version",
+            "synthetic",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
+        preconditions=["raw_eeg_present", "data_quality_pass"],
+        limitations=["When annotations are absent, events are inferred as fixed windows."],
+    )
+
+    def extract_events(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        return _outcome(events_manifest, ToolStatus.SUCCESS, data=eeg.event_summary(state))
+
+    registry.register(FunctionTool(events_manifest, extract_events))
+
+    epochs_manifest = _manifest(
+        "create_epochs",
+        version=eeg.version,
+        category="eeg",
+        produced_outputs=[
+            "epoch_count",
+            "channel_count",
+            "samples_per_epoch",
+            "epoch_seconds",
+            "event_mode",
+            "pipeline_version",
+            "synthetic",
+        ],
+        allowlisted_fields=[
+            "epoch_count",
+            "channel_count",
+            "samples_per_epoch",
+            "epoch_seconds",
+            "event_mode",
+            "pipeline_version",
+            "synthetic",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
+        preconditions=["raw_eeg_present", "data_quality_pass"],
+        limitations=["Epochs are deterministic analysis windows, not clinically annotated trials."],
+    )
+
+    def create_epochs(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        return _outcome(epochs_manifest, ToolStatus.SUCCESS, data=eeg.epoch_summary(state))
+
+    registry.register(FunctionTool(epochs_manifest, create_epochs))
+
+    feature_manifest = _manifest(
+        "extract_eeg_features",
+        version=eeg.version,
+        category="eeg",
+        produced_outputs=[
+            "features",
+            "feature_count",
+            "epoch_count",
+            "event_mode",
+            "pipeline_version",
+            "synthetic",
+            "feature_semantics",
+        ],
+        allowlisted_fields=[
+            "feature_count",
+            "epoch_count",
+            "event_mode",
+            "pipeline_version",
+            "synthetic",
+            "feature_semantics",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
+        preconditions=["raw_eeg_present", "data_quality_pass"],
+        limitations=[
+            "Extracted spectral summaries are engineering features and do not establish ASD status.",
+            "Raw signal and full feature values are never exposed to the LLM context.",
+        ],
+    )
+
+    def extract_eeg_features(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        extracted = eeg.extract_features(state)
+        raw_features = extracted["features"]
+        assert isinstance(raw_features, dict)
+        return _outcome(
+            feature_manifest,
+            ToolStatus.SUCCESS,
+            data=extracted,
+            update=StateUpdate(
+                feature_updates={key: float(value) for key, value in raw_features.items()},
+                limitations_add=(
+                    ["Features were extracted from deterministic synthetic EEG."]
+                    if extracted["synthetic"]
+                    else []
+                ),
+            ),
+        )
+
+    registry.register(FunctionTool(feature_manifest, extract_eeg_features))
 
     quality_manifest = _manifest(
         "check_data_quality",
@@ -237,18 +512,28 @@ def build_core_registry(
     def check_model_readiness(
         state: AssessmentCaseState, _: dict[str, object]
     ) -> ToolExecutionOutcome:
-        if state.existing_model_result is not None:
+        if state.data_quality == "blocked":
+            readiness = ModelReadiness.BLOCKED
+            reason = "data quality is blocked"
+            mode = "unavailable"
+        elif state.existing_model_result is not None:
             readiness = ModelReadiness.RESTRICTED
             reason = "an existing result can be interpreted but must not be re-run"
             mode = "existing_result"
-        elif "senior_row_index" in state.metadata_summary:
-            readiness = ModelReadiness.RESTRICTED
-            reason = "legacy OOF replay only; prospective inference is not validated"
-            mode = "legacy_oof_replay"
         else:
-            readiness = ModelReadiness.BLOCKED
-            reason = "no validated deployable model or replay row is available"
-            mode = "unavailable"
+            available, reason, missing = baseline.readiness(state.feature_table)
+            if available:
+                readiness = ModelReadiness.RESTRICTED
+                mode = "current_case_pretrained_research_baseline"
+                if missing:
+                    reason = f"{reason}; {len(missing)} of 7 inputs require reference-mean imputation"
+            elif "senior_row_index" in state.metadata_summary:
+                readiness = ModelReadiness.RESTRICTED
+                reason = "current-case baseline unavailable; historical OOF replay remains available"
+                mode = "legacy_oof_replay"
+            else:
+                readiness = ModelReadiness.BLOCKED
+                mode = "unavailable"
         return _outcome(
             readiness_manifest,
             ToolStatus.SUCCESS,
@@ -261,6 +546,79 @@ def build_core_registry(
         )
 
     registry.register(FunctionTool(readiness_manifest, check_model_readiness))
+
+    baseline_manifest = _manifest(
+        "run_asd_baseline_model",
+        version=baseline.version,
+        category="model",
+        produced_outputs=[
+            "model_name",
+            "model_version",
+            "readiness_status",
+            "predicted_pattern",
+            "score",
+            "class_scores",
+            "score_meaning",
+            "output_meaning",
+            "observed_feature_count",
+            "imputed_features",
+            "feature_contract_version",
+            "semantic_contract_status",
+            "scaler_mode",
+            "scaler_version",
+            "limitations",
+        ],
+        allowlisted_fields=[
+            "model_name",
+            "model_version",
+            "readiness_status",
+            "predicted_pattern",
+            "score",
+            "class_scores",
+            "score_meaning",
+            "output_meaning",
+            "observed_feature_count",
+            "imputed_features",
+            "feature_contract_version",
+            "semantic_contract_status",
+            "scaler_mode",
+            "scaler_version",
+            "limitations",
+        ],
+        implementation=ImplementationKind.RESTRICTED_REAL,
+        goals=[RequestedGoal.FULL_ASSESSMENT],
+        preconditions=[
+            "feature_table_present",
+            "model_result_absent",
+            "model_readiness_not_blocked",
+            "model_checked",
+            "data_quality_pass",
+        ],
+        limitations=baseline.limitations([]),
+    )
+
+    def run_asd_baseline_model(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        if state.model_readiness is ModelReadiness.BLOCKED:
+            return _outcome(
+                baseline_manifest,
+                ToolStatus.BLOCKED,
+                errors=["model readiness is blocked"],
+            )
+        prediction = baseline.predict(state.feature_table)
+        return _outcome(
+            baseline_manifest,
+            ToolStatus.SUCCESS,
+            data=prediction,
+            update=StateUpdate(
+                existing_model_result=prediction,
+                limitations_add=[str(item) for item in prediction["limitations"]],
+            ),
+            limitations=[str(item) for item in prediction["limitations"]],
+        )
+
+    registry.register(FunctionTool(baseline_manifest, run_asd_baseline_model))
 
     existing_result_manifest = _manifest(
         "inspect_existing_model_result",
@@ -381,19 +739,76 @@ def build_core_registry(
 
     registry.register(FunctionTool(classifier_manifest, research_replay_classifier))
 
+    query_manifest = _manifest(
+        "build_asd_rag_query",
+        version="1.1",
+        category="knowledge",
+        produced_outputs=["query", "query_terms", "grounding_sources"],
+        allowlisted_fields=["query", "query_terms", "grounding_sources"],
+        implementation=ImplementationKind.REAL,
+        goals=[
+            RequestedGoal.FULL_ASSESSMENT,
+            RequestedGoal.KNOWLEDGE_SEARCH,
+            RequestedGoal.REPORT_ONLY,
+        ],
+        limitations=[
+            "The query contains only high-level case state and never raw signal or complete feature values."
+        ],
+    )
+
+    def build_asd_rag_query(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        terms = ["ASD", "autism", "EEG", "ability", "social communication"]
+        grounding = ["user_request", "input_type"]
+        if state.existing_model_result:
+            pattern = state.existing_model_result.get("predicted_pattern")
+            if pattern:
+                terms.append(str(pattern).replace("_", " "))
+                grounding.append("model_observation")
+        if "theta_coh" in state.feature_table:
+            terms.extend(["theta coherence", "connectivity"])
+            grounding.append("available_feature_names")
+        if "parietal_alpha" in state.feature_table:
+            terms.extend(["parietal alpha", "spectral power"])
+            grounding.append("available_feature_names")
+        if state.existing_report:
+            terms.extend(["assessment interpretation", "limitations"])
+            grounding.append("existing_report_present")
+        terms = list(dict.fromkeys(terms))
+        query = " ".join(terms)
+        return _outcome(
+            query_manifest,
+            ToolStatus.SUCCESS,
+            data={
+                "query": query,
+                "query_terms": terms,
+                "grounding_sources": list(dict.fromkeys(grounding)),
+            },
+            update=StateUpdate(rag_query=query),
+        )
+
+    registry.register(FunctionTool(query_manifest, build_asd_rag_query))
+
     knowledge_manifest = _manifest(
         "retrieve_asd_knowledge",
+        version="1.1",
         category="knowledge",
-        required_inputs=["query"],
+        optional_inputs=["query"],
+        preconditions=["rag_query_present"],
         produced_outputs=["query", "items", "mode"],
         allowlisted_fields=[
             "query",
             "mode",
             "items[].evidence_id",
             "items[].title",
-            "items[].normalized_summary",
             "items[].source",
+            "items[].retrieved_chunk",
+            "items[].summary",
             "items[].relevance",
+            "items[].metadata.year",
+            "items[].metadata.doi",
+            "items[].metadata.mode",
             "items[].limitations",
         ],
         implementation=ImplementationKind.OFFLINE,
@@ -409,22 +824,22 @@ def build_core_registry(
     )
 
     def retrieve_asd_knowledge(
-        _: AssessmentCaseState, arguments: dict[str, object]
+        state: AssessmentCaseState, arguments: dict[str, object]
     ) -> ToolExecutionOutcome:
-        query = str(arguments["query"])
+        query = str(arguments.get("query") or state.rag_query or "")
         retrieved = knowledge.retrieve(query, limit=5)
         items = [
             {
-                "evidence_id": str(
-                    item.metadata.get("evidence_id", f"knowledge-{index}")
-                ),
+                "evidence_id": item.evidence_id,
                 "title": item.title,
-                "normalized_summary": item.chunk,
                 "source": item.source,
-                "relevance": item.score,
-                "limitations": ["Background knowledge only; not case-specific evidence."],
+                "retrieved_chunk": item.retrieved_chunk,
+                "summary": item.summary,
+                "relevance": item.relevance,
+                "metadata": item.metadata,
+                "limitations": item.limitations,
             }
-            for index, item in enumerate(retrieved.items, start=1)
+            for item in retrieved.items
         ]
         status = ToolStatus.SUCCESS if items else ToolStatus.FAILURE
         return _outcome(

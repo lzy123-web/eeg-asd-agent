@@ -14,6 +14,8 @@ class OfflineProvider:
     name = "offline_fixture"
 
     def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
+        if purpose == "next_action":
+            return json.dumps(payload["fallback_action"], ensure_ascii=False)
         if purpose == "planning":
             case = dict(cast(dict[str, object], payload["case"]))
             allowed = list(cast(list[object], payload.get("allowed_tool_names", [])))
@@ -142,13 +144,14 @@ class OfflineProvider:
                 continue
             visible = dict(cast(dict[str, object], result.get("visible_facts", {})))
             if tool_name in {
+                "run_asd_baseline_model",
                 "research_replay_classifier",
                 "inspect_existing_model_result",
             }:
                 model_status = str(visible.get("readiness_status", "restricted"))
                 pattern = str(visible.get("predicted_pattern", "未提供"))
                 meaning = str(visible.get("output_meaning", "仅限研究解释"))
-                model_summary = f"历史回放模式为 {pattern}；{meaning}"
+                model_summary = f"受限研究模型输出模式为 {pattern}；{meaning}"
                 model_tools.append(tool_name)
             elif tool_name == "check_model_readiness":
                 model_status = str(visible.get("readiness_status", model_status))

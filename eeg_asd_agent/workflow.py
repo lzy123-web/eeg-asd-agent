@@ -12,7 +12,12 @@ from eeg_asd_agent.execution import (
     ObservationNormalizer,
 )
 from eeg_asd_agent.intent import RuleBasedIntentParser
-from eeg_asd_agent.planning import DeterministicPlanner, LLMPlanner, NextActionPlanner
+from eeg_asd_agent.planning import (
+    DeterministicPlanner,
+    LLMNextActionPlanner,
+    LLMPlanner,
+    NextActionPlanner,
+)
 from eeg_asd_agent.providers import OfflineProvider, OfflineReportGenerator
 from eeg_asd_agent.reporting import HTMLRenderer
 from eeg_asd_agent.schemas import ActionDecision, AssessmentCaseState, PlanSpec, RequestedGoal
@@ -80,17 +85,31 @@ def run_workflow(
     goal = RuleBasedIntentParser().parse(request)
     state.user_request = request
     state.requested_goal = goal
-    planner = NextActionPlanner(registry, use_manifests=planner_kind != "deterministic-no-manifest")
+    deterministic = NextActionPlanner(
+        registry, use_manifests=planner_kind != "deterministic-no-manifest"
+    )
+    planner: NextActionPlanner | LLMNextActionPlanner
+    if planner_kind == "llm":
+        planner = LLMNextActionPlanner(registry, active_provider, fallback=deterministic)
+    else:
+        planner = deterministic
     normalizer = ObservationNormalizer()
     outcome = IncrementalWorkflowExecutor(registry, normalizer, trace).execute(state, planner)
     store.write_json(
         "plan.json",
         {
-            "planner_kind": "incremental_state_driven",
+            "planner_kind": (
+                "llm_incremental_next_action"
+                if isinstance(planner, LLMNextActionPlanner)
+                else "deterministic_incremental_state_driven"
+            ),
             "case_id": state.case_id,
             "decisions": outcome.decisions,
+            "fallback_count": getattr(planner, "fallback_count", 0),
         },
     )
+    if isinstance(planner, LLMNextActionPlanner):
+        store.write_json("planner_payloads.json", planner.payload_history)
     store.write_text("plan.mmd", decisions_to_mermaid(outcome.decisions))
     for index, result in enumerate(outcome.results, start=1):
         store.write_json(f"tool_results/{index:02d}_{result.tool_name}.json", result)
@@ -135,6 +154,8 @@ def run_workflow(
                 result.tool_name: round(result.duration_ms, 3) for result in outcome.results
             },
             "provider": active_provider.name,
+            "planner_kind": planner_kind,
+            "planner_fallback_count": getattr(planner, "fallback_count", 0),
             "usage": usage,
             "evaluation_mode": (
                 "offline_structural_validation"
@@ -161,6 +182,8 @@ def run_workflow(
         "plan_mermaid": output_dir / "plan.mmd",
         "run_stats": output_dir / "run_stats.json",
     }
+    if isinstance(planner, LLMNextActionPlanner):
+        artifacts["planner_payloads"] = output_dir / "planner_payloads.json"
     if state.report_spec is not None:
         artifacts.update(
             {

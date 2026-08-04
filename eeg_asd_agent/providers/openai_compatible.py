@@ -4,10 +4,11 @@ import json
 import os
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
-from eeg_asd_agent.schemas import FinalAssessmentReportSpec, PlanSpec
+from eeg_asd_agent.schemas import ActionDecision, FinalAssessmentReportSpec, PlanSpec
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -26,6 +27,7 @@ class OpenAIResponsesProvider:
     model: str
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: float = 120
+    temperature: float = 0.0
     name: str = "openai_responses"
     last_usage: dict[str, int] = field(default_factory=dict)
 
@@ -41,12 +43,14 @@ class OpenAIResponsesProvider:
             api_key=api_key,
             model=model,
             base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            temperature=float(os.environ.get("OPENAI_TEMPERATURE", "0")),
         )
 
     def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
         schema, schema_name = self._schema(purpose)
         body = {
             "model": self.model,
+            "temperature": self.temperature,
             "input": [
                 {
                     "role": "system",
@@ -106,14 +110,49 @@ class OpenAIResponsesProvider:
 
     @staticmethod
     def _schema(purpose: str) -> tuple[dict[str, Any], str]:
+        if purpose == "next_action":
+            return OpenAIResponsesProvider._strict_schema(
+                ActionDecision.model_json_schema()
+            ), "next_action"
         if purpose == "planning":
-            return PlanSpec.model_json_schema(), "plan_spec"
+            return OpenAIResponsesProvider._strict_schema(
+                PlanSpec.model_json_schema()
+            ), "plan_spec"
         if purpose in {"report", "repair"}:
-            return FinalAssessmentReportSpec.model_json_schema(), "final_assessment_report_spec"
+            return OpenAIResponsesProvider._strict_schema(
+                FinalAssessmentReportSpec.model_json_schema()
+            ), "final_assessment_report_spec"
         raise ValueError(f"unsupported provider purpose: {purpose}")
 
     @staticmethod
+    def _strict_schema(raw: dict[str, Any]) -> dict[str, Any]:
+        """Normalize Pydantic JSON Schema for strict Structured Outputs."""
+        schema = deepcopy(raw)
+
+        def visit(node: Any) -> None:
+            if isinstance(node, dict):
+                node.pop("default", None)
+                if node.get("type") == "object" or "properties" in node:
+                    properties = node.get("properties", {})
+                    if isinstance(properties, dict):
+                        node["additionalProperties"] = False
+                        node["required"] = list(properties)
+                for value in node.values():
+                    visit(value)
+            elif isinstance(node, list):
+                for value in node:
+                    visit(value)
+
+        visit(schema)
+        return schema
+
+    @staticmethod
     def _system_prompt(purpose: str) -> str:
+        if purpose == "next_action":
+            return (
+                "Return exactly one ActionDecision. Choose only allowed_next_actions and legal arguments. "
+                "Base the decision on current_state and previous_observations. Never expose or request raw data."
+            )
         if purpose == "planning":
             return (
                 "Return only a PlanSpec. Use only allowed_tool_names. Respect completed workflows, "

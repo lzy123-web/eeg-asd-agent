@@ -1,5 +1,19 @@
 # Progress
 
+## 2026-08-04 — V1 runnable workflow completion
+
+- [x] synthetic / NPZ / MAT / equal-rate EDF inspection and deterministic EEG chain
+- [x] `check_eeg_quality` observation-driven stop gate
+- [x] current-case NumPy inference from senior `best_mlp.pt`, with hash/version and hard limitations
+- [x] open-source model audit; no incompatible foundation model was misused as an ASD classifier
+- [x] dynamic `build_asd_rag_query` and BM25 Evidence contract
+- [x] per-observation LLM `ActionDecision` Provider with deterministic fallback
+- [x] allowlisted ReportSpec generation, one Provider repair, deterministic limited fallback
+- [x] four required E2E paths plus blocked-quality branch
+- [x] README, V1 profile and implementation handoff updated
+- [ ] real Provider run (credentials unavailable; Offline mode is not efficacy evidence)
+- [ ] real participant EEG / subject-level clinical validation (data unavailable)
+
 ## 2026-07-29 — Phase 4: final audit and handoff
 
 - [x] README 第一屏改为当前 incremental state-driven 核心路径

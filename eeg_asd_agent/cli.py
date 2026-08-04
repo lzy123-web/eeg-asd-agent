@@ -9,7 +9,7 @@ import typer
 from eeg_asd_agent.benchmarks import BenchmarkSuite, CorePlanningBenchmark
 from eeg_asd_agent.dashboard import build_dashboard
 from eeg_asd_agent.integrity import audit_integrity
-from eeg_asd_agent.providers import OpenAIResponsesProvider
+from eeg_asd_agent.providers import OpenAIResponsesProvider, ProviderConfigurationError
 from eeg_asd_agent.schemas import AssessmentCaseState
 from eeg_asd_agent.tools.builtin import build_default_registry
 from eeg_asd_agent.tools.core_workflow import build_core_registry
@@ -33,6 +33,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _load_case(path: Path) -> AssessmentCaseState:
     return AssessmentCaseState.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def _load_provider(offline: bool) -> OpenAIResponsesProvider | None:
+    if offline:
+        return None
+    try:
+        return OpenAIResponsesProvider.from_env()
+    except ProviderConfigurationError as exc:
+        typer.echo(f"Provider unavailable; using offline fallback: {exc}", err=True)
+        return None
 
 
 @tools_app.command("list")
@@ -59,16 +69,8 @@ def tools_describe(name: str) -> None:
 
 @profile_app.command("show")
 def profile_show() -> None:
-    profile = {
-        "name": "offline",
-        "planner": "incremental_state_driven",
-        "provider": "offline_report_generator",
-        "max_steps": 16,
-        "stuck_limit": 2,
-        "report_schema": "FinalAssessmentReportSpec@1.0",
-        "evaluation_mode": "offline_structural_validation",
-        "scientific_claim_allowed": False,
-    }
+    profile = json.loads((PROJECT_ROOT / "profiles" / "v1.json").read_text(encoding="utf-8"))
+    profile["report_schema"] = "FinalAssessmentReportSpec@1.0"
     typer.echo(json.dumps(profile, ensure_ascii=False, indent=2))
 
 
@@ -81,7 +83,7 @@ def plan_command(
     offline: Annotated[bool, typer.Option()] = True,
 ) -> None:
     state = _load_case(case)
-    provider = None if offline else OpenAIResponsesProvider.from_env()
+    provider = _load_provider(offline)
     active_planner = planner if offline or planner != "deterministic" else "llm"
     plan = build_plan(state, request, planner_kind=active_planner, provider=provider)
     content = plan.model_dump_json(indent=2)
@@ -100,7 +102,7 @@ def run_command(
     offline: Annotated[bool, typer.Option()] = True,
 ) -> None:
     state = _load_case(case)
-    provider = None if offline else OpenAIResponsesProvider.from_env()
+    provider = _load_provider(offline)
     active_planner = planner if offline or planner != "deterministic" else "llm"
     artifacts = run_workflow(
         state,

@@ -12,13 +12,13 @@ raw EEG / feature table / existing model result
   → deterministic EEG tools
   → restricted current-case pretrained baseline
   → execution-grounded RAG query
-  → local BM25 knowledge retrieval
+  → senior AbilityKG graph traversal + senior paper retrieval
   → allowlisted LLM/Offline ReportSpec JSON
   → deterministic Markdown + HTML
 ```
 
 它不是临床诊断系统，不输出 ASD 确诊、排除诊断、CARS 严重程度或治疗处方。当前合成 EEG、
-师兄模型和离线 RAG 的真实性与限制会同时进入 ToolResult、Observation、ReportSpec 和 Trace。
+师兄模型和 RAG 的真实性与限制会同时进入 ToolResult、Observation、ReportSpec 和 Trace。
 
 ## Agent 接收什么、做什么、输出什么
 
@@ -66,7 +66,7 @@ flowchart TD
 | `run_asd_baseline_model` | NumPy 读取师兄已训练 `best_mlp.pt`，执行当前个案前向推理 | RESTRICTED_REAL |
 | `research_replay_classifier` | 只保留师兄历史 OOF 行回放；不是当前个案推理 | REPLAY |
 | `build_asd_rag_query` | 从已执行模型/特征可用性构造动态查询 | REAL |
-| `retrieve_asd_knowledge` | 师兄 KG/论文导出的本地 BM25 检索 | OFFLINE |
+| `retrieve_asd_knowledge` | 师兄 Ability→Dimension→Task 图谱遍历 + 论文 BM25；可选 live Neo4j | ADAPTER |
 | `generate_report_spec` | 真实 Provider 或明确标记的 OfflineProvider | ADAPTER / OFFLINE |
 | `render_report` | 不添加事实的 Markdown Renderer；HTML 同步生成 | REAL |
 
@@ -103,8 +103,16 @@ evidence_id, title, source, retrieved_chunk, summary,
 relevance, metadata, limitations
 ```
 
-当前 live Neo4j/Spark 入口不可用，运行模式明确为 `offline_bm25_local_export`。ReportSpec 的
-`knowledge_interpretation.evidence_ids` 和最终报告都会保留 Evidence ID。
+检索先按动态 Query 选择师兄 `Ability` 节点，再沿师兄代码原有的
+`Ability-[:REFLECTED_BY]->Dimension-[:INCLUDE]->Task` 路径取图谱知识；第二路在师兄 PubMed
+导出语料上执行 BM25。当前本机没有 Neo4j 服务，因此运行模式为
+`senior_graph_export_traversal+paper_bm25`：遍历的是师兄同一套节点与关系 CSV，而不是把 KG
+节点混成普通文本搜索。若配置 `EEG_ASD_NEO4J_URI/USER/PASSWORD` 且服务可达，则优先执行同一条
+Cypher，模式切换为 `senior_neo4j_graph_traversal+paper_bm25`；live 模式需安装 `rag` extra。
+
+所有结果使用稳定的 `SENIOR-KG-*` 或 `SENIOR-PAPER-*` Evidence ID。Report Provider 只能看到
+Allowlist 后的 Evidence；ReportSpec 若引用检索结果中不存在的 ID，会触发一次修复，仍不合法则生成
+确定性有限报告。
 
 ## 快速运行四条 E2E
 
@@ -159,7 +167,8 @@ export OPENAI_TEMPERATURE="0"                       # optional, default 0
 ```
 
 每轮 Provider 收到：脱敏请求、Case State 摘要、白名单 Observation、Capability Manifests、
-已完成/失败步骤和当前合法动作；只能返回严格 `ActionDecision`。未知工具、非法参数、提前停止、
+已完成/失败步骤，以及由 Manifest 前置条件独立计算出的全部合法候选动作；真实 Provider 看不到
+DeterministicPlanner 的预选答案。它只能返回严格 `ActionDecision`。未知工具、非法参数、提前停止、
 Schema 错误或网络故障会回退到 DeterministicPlanner。报告 Provider 只看到 Allowlist Context，
 非法 ReportSpec 允许一次 Provider repair，仍失败则生成确定性有限报告。
 
@@ -169,6 +178,9 @@ Schema 错误或网络故障会回退到 DeterministicPlanner。报告 Provider 
 cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 /Users/nick/.cache/codex-runtimes/codex-primary-runtime/dependencies/python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev,eeg]'
+
+# 仅需连接师兄 Neo4j live 服务时安装
+.venv/bin/python -m pip install -e '.[rag]'
 
 .venv/bin/python -m eeg_asd_agent.cli tools list
 .venv/bin/python -m eeg_asd_agent.cli tools describe run_asd_baseline_model
@@ -190,8 +202,8 @@ cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 
 - `best_mlp.pt` 与 `dynamic_features.csv`：当前个案受限前向推理；
 - `*_with_oof.csv`：仅历史回放；
-- KG / paper CSV：本地 BM25 Evidence 检索。
+- Ability/Dimension/Task 节点与关系 CSV：复现师兄 AbilityKG 图谱遍历；paper CSV：论文 BM25 通道。
 
-未复制硬编码密钥，未连接旧 Neo4j/Spark 服务，未修改旧工程，未训练或微调新模型。
+未复制师兄代码中的硬编码密钥，当前未连接 Neo4j/Spark 服务，未修改旧工程，未训练或微调新模型。
 
 完整实现交接与失败记录见 [V1 handoff](docs/research/16_v1_handoff.md)。

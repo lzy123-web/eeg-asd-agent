@@ -20,16 +20,60 @@ class StructuredReportGenerator:
     def generate(self, context: dict[str, object]) -> tuple[FinalAssessmentReportSpec, str, bool]:
         raw = self.provider.generate_json("report", context)
         try:
-            return FinalAssessmentReportSpec.model_validate_json(raw), raw, False
+            report = FinalAssessmentReportSpec.model_validate_json(raw)
+            self._validate_evidence_ids(report, context)
+            return report, raw, False
         except Exception:
             try:
                 repair_payload = dict(context)
                 repair_payload["raw_output"] = raw
                 repaired_raw = self.provider.generate_json("repair", repair_payload)
                 repaired = self._safe_repair(repaired_raw)
-                return FinalAssessmentReportSpec.model_validate_json(repaired), raw, True
+                report = FinalAssessmentReportSpec.model_validate_json(repaired)
+                self._validate_evidence_ids(report, context)
+                return report, raw, True
             except Exception:
                 return self._deterministic_limited_report(context), raw, True
+
+    @staticmethod
+    def _validate_evidence_ids(
+        report: FinalAssessmentReportSpec,
+        context: dict[str, object],
+    ) -> None:
+        allowed: set[str] = set()
+        retrieval_succeeded = False
+        for raw_result in cast(list[object], context.get("visible_results", [])):
+            if not isinstance(raw_result, dict):
+                continue
+            if raw_result.get("tool_name") != "retrieve_asd_knowledge":
+                continue
+            if raw_result.get("status") != "success":
+                continue
+            visible_facts = raw_result.get("visible_facts", {})
+            if not isinstance(visible_facts, dict):
+                continue
+            items = visible_facts.get("items", [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                evidence_id = item.get("evidence_id")
+                if isinstance(evidence_id, str) and evidence_id:
+                    allowed.add(evidence_id)
+            retrieval_succeeded = bool(allowed)
+
+        cited = set(report.knowledge_interpretation.evidence_ids)
+        invented = cited - allowed
+        if invented:
+            raise ValueError(
+                "report cites Evidence IDs absent from allowlisted retrieval: "
+                + ", ".join(sorted(invented))
+            )
+        if retrieval_succeeded and not cited:
+            raise ValueError("report must cite at least one retrieved Evidence ID")
+        if not retrieval_succeeded and cited:
+            raise ValueError("report cannot cite Evidence IDs when retrieval returned none")
 
     @staticmethod
     def _safe_repair(raw: str) -> str:

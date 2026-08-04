@@ -303,7 +303,7 @@ class LLMNextActionPlanner:
         goal = state.requested_goal or RequestedGoal.UNSUPPORTED
         projector = AllowlistProjector(self.registry)
         context_builder = ContextBuilder(self.registry, projector)
-        available = [fallback.tool_name] if fallback.tool_name is not None else []
+        available = self._legal_actions(state, goal, fallback)
         payload: dict[str, object] = {
             "user_request": self._safe_request(state.user_request),
             "goal": goal.value,
@@ -332,18 +332,24 @@ class LLMNextActionPlanner:
             "completed_workflows": state.completed_workflows,
             "failed_workflows": state.failed_workflows,
             "remaining_step_budget": max(0, self.max_steps - state.step_count),
-            "fallback_action": fallback.model_dump(mode="json"),
             "rules": [
                 "Return exactly one ActionDecision JSON object.",
                 "Choose only from allowed_next_actions, or return terminal=true with tool_name=null.",
                 "Never claim an unexecuted tool succeeded.",
+                "Use capability manifests and prior observations; do not assume the deterministic fallback choice.",
             ],
         }
         self.payload_history.append(payload)
         try:
-            raw = self.provider.generate_json("next_action", payload)
+            provider_payload = payload
+            if self.provider.name.startswith("offline"):
+                provider_payload = {
+                    **payload,
+                    "fixture_fallback_action": fallback.model_dump(mode="json"),
+                }
+            raw = self.provider.generate_json("next_action", provider_payload)
             decision = ActionDecision.model_validate_json(self._extract_json_object(raw))
-            self._validate(decision, available, state, fallback)
+            self._validate(decision, available, state)
             return decision
         except Exception as exc:
             self.fallback_count += 1
@@ -356,12 +362,11 @@ class LLMNextActionPlanner:
         decision: ActionDecision,
         available: list[str],
         state: AssessmentCaseState,
-        fallback: ActionDecision,
     ) -> None:
         if decision.tool_name is None:
             if not decision.terminal:
                 raise ValueError("tool_name=null requires terminal=true")
-            if fallback.tool_name is not None:
+            if available:
                 raise ValueError("provider attempted to stop before workflow completion")
             return
         if decision.tool_name not in available:
@@ -376,6 +381,36 @@ class LLMNextActionPlanner:
         ready, unmet = self.registry.preconditions_met(decision.tool_name, state)
         if not ready:
             raise ValueError(f"provider selected tool with unmet preconditions: {unmet}")
+        observation_ids = {item.observation_id for item in state.observations}
+        unknown_observations = set(decision.based_on_observations) - observation_ids
+        if unknown_observations:
+            raise ValueError("provider cited unknown observations")
+
+    def _legal_actions(
+        self,
+        state: AssessmentCaseState,
+        goal: RequestedGoal,
+        fallback: ActionDecision,
+    ) -> list[str]:
+        if goal is RequestedGoal.UNSUPPORTED:
+            return [fallback.tool_name] if fallback.tool_name is not None else []
+        legal: list[str] = []
+        for manifest in self.registry.manifests():
+            name = manifest.name
+            if goal not in manifest.supported_goals:
+                continue
+            if name in state.completed_workflows or name in state.failed_workflows:
+                continue
+            if manifest.category == "control" and name != fallback.tool_name:
+                continue
+            ready, _unmet = self.registry.preconditions_met(name, state)
+            if ready:
+                legal.append(name)
+        if fallback.tool_name is not None and fallback.tool_name not in legal:
+            ready, _unmet = self.registry.preconditions_met(fallback.tool_name, state)
+            if ready:
+                legal.append(fallback.tool_name)
+        return sorted(legal)
 
     @staticmethod
     def _extract_json_object(raw: str) -> str:

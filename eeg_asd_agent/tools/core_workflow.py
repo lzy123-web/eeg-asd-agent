@@ -223,7 +223,7 @@ def build_core_registry(
         ],
         implementation=ImplementationKind.REAL,
         goals=eeg_goals,
-        preconditions=["raw_eeg_present"],
+        preconditions=["raw_eeg_present", "case_inspected"],
         limitations=[
             "Synthetic recordings are workflow fixtures and are not participant evidence.",
             "V1 supports synthetic URI, NPZ, MAT, and equal-rate EDF input only.",
@@ -274,7 +274,7 @@ def build_core_registry(
         ],
         implementation=ImplementationKind.REAL,
         goals=eeg_goals,
-        preconditions=["raw_eeg_present"],
+        preconditions=["raw_eeg_present", "case_inspected", "eeg_inspected"],
         limitations=["Signal thresholds are engineering gates, not clinical EEG interpretation."],
     )
 
@@ -319,7 +319,11 @@ def build_core_registry(
         ],
         implementation=ImplementationKind.REAL,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
-        preconditions=["raw_eeg_present", "data_quality_pass"],
+        preconditions=[
+            "raw_eeg_present",
+            "data_quality_pass",
+            "eeg_quality_checked",
+        ],
         limitations=["Processing parameters are fixed by the versioned eeg-v1.0 profile."],
     )
 
@@ -354,7 +358,11 @@ def build_core_registry(
         ],
         implementation=ImplementationKind.REAL,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
-        preconditions=["raw_eeg_present", "data_quality_pass"],
+        preconditions=[
+            "raw_eeg_present",
+            "data_quality_pass",
+            "eeg_preprocessed",
+        ],
         limitations=["When annotations are absent, events are inferred as fixed windows."],
     )
 
@@ -389,7 +397,11 @@ def build_core_registry(
         ],
         implementation=ImplementationKind.REAL,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
-        preconditions=["raw_eeg_present", "data_quality_pass"],
+        preconditions=[
+            "raw_eeg_present",
+            "data_quality_pass",
+            "events_extracted",
+        ],
         limitations=["Epochs are deterministic analysis windows, not clinically annotated trials."],
     )
 
@@ -423,7 +435,11 @@ def build_core_registry(
         ],
         implementation=ImplementationKind.REAL,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
-        preconditions=["raw_eeg_present", "data_quality_pass"],
+        preconditions=[
+            "raw_eeg_present",
+            "data_quality_pass",
+            "epochs_created",
+        ],
         limitations=[
             "Extracted spectral summaries are engineering features and do not establish ASD status.",
             "Raw signal and full feature values are never exposed to the LLM context.",
@@ -463,7 +479,11 @@ def build_core_registry(
             RequestedGoal.QUALITY_CHECK,
             RequestedGoal.READINESS_CHECK,
         ],
-        preconditions=["feature_table_present"],
+        preconditions=[
+            "feature_table_present",
+            "case_inspected",
+            "tabular_quality_required",
+        ],
     )
 
     def check_data_quality(
@@ -503,7 +523,11 @@ def build_core_registry(
             RequestedGoal.QUALITY_CHECK,
             RequestedGoal.READINESS_CHECK,
         ],
-        preconditions=["feature_table_present"],
+        preconditions=[
+            "feature_table_present",
+            "case_inspected",
+            "feature_pipeline_ready",
+        ],
         limitations=[
             "Readiness checks availability and known leakage risks; it does not validate clinical performance."
         ],
@@ -647,7 +671,11 @@ def build_core_registry(
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
-        preconditions=["model_result_present"],
+        preconditions=[
+            "model_result_present",
+            "case_inspected",
+            "external_model_result_pending",
+        ],
         limitations=[
             "The tool validates and projects a supplied result; it does not re-run or validate the originating model."
         ],
@@ -699,6 +727,7 @@ def build_core_registry(
             "model_result_absent",
             "model_readiness_not_blocked",
             "model_checked",
+            "baseline_failed",
         ],
         limitations=[
             "This is historical OOF replay, not prospective inference on a new participant.",
@@ -751,6 +780,7 @@ def build_core_registry(
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
+        preconditions=["case_inspected", "rag_query_allowed"],
         limitations=[
             "The query contains only high-level case state and never raw signal or complete feature values."
         ],
@@ -792,7 +822,7 @@ def build_core_registry(
 
     knowledge_manifest = _manifest(
         "retrieve_asd_knowledge",
-        version="1.1",
+        version="2.0",
         category="knowledge",
         optional_inputs=["query"],
         preconditions=["rag_query_present"],
@@ -809,16 +839,21 @@ def build_core_registry(
             "items[].metadata.year",
             "items[].metadata.doi",
             "items[].metadata.mode",
+            "items[].metadata.ability_id",
+            "items[].metadata.dimension_count",
+            "items[].metadata.task_count",
+            "items[].metadata.graph_path",
             "items[].limitations",
         ],
-        implementation=ImplementationKind.OFFLINE,
+        implementation=ImplementationKind.ADAPTER,
         goals=[
             RequestedGoal.FULL_ASSESSMENT,
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
         limitations=[
-            "The live senior Neo4j RAG runtime was unavailable; retrieval uses an exported local index.",
+            "检索复用师兄 AbilityKG 的 Ability-Dimension-Task 图谱路径，并联合其 PubMed 导出语料。",
+            "配置 Neo4j 环境变量时优先查询师兄图数据库；否则遍历同一图谱的只读 CSV 导出。",
             "Retrieved background knowledge is not participant-level evidence.",
         ],
     )
@@ -867,6 +902,7 @@ def build_core_registry(
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
+        preconditions=["report_inputs_resolved"],
         limitations=[
             "OfflineReportGenerator validates structure and flow only; it is not LLM efficacy evidence."
         ]

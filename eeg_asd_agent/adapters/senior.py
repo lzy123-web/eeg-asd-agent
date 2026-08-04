@@ -122,26 +122,328 @@ class SeniorKGAdapter:
 
 
 class SeniorKnowledgeAdapter:
-    """Read-only local index over the senior project's exported KG and paper data.
+    """Query the senior project's AbilityKG RAG and paper corpus.
 
-    The live Neo4j retrieval code was inspected and probed, but cannot run in the
-    current environment. This adapter therefore preserves a stable structured
-    interface while reporting ``mode=offline_bm25_local_export``.
+    This keeps the senior retrieval semantics instead of treating every CSV as
+    an unstructured document: query terms select Ability nodes, then the adapter
+    traverses ``Ability -> Dimension -> Task`` using the same relationships as
+    the senior Neo4j code. A configured Neo4j service is preferred; otherwise
+    the reviewed CSV graph export is traversed locally. PubMed exports form a
+    second lexical evidence channel.
     """
 
-    mode = "offline_bm25_local_export"
+    export_mode = "senior_graph_export_traversal+paper_bm25"
+    live_mode = "senior_neo4j_graph_traversal+paper_bm25"
+    ability_aliases = {
+        "social_interaction": {
+            "social",
+            "interaction",
+            "social interaction",
+            "social communication",
+            "社交",
+            "交往",
+            "社会互动",
+            "社交沟通",
+        },
+        "communication_expression": {
+            "communication",
+            "language",
+            "expression",
+            "social communication",
+            "沟通",
+            "语言",
+            "表达",
+            "社交沟通",
+        },
+        "emotion_recognition": {
+            "emotion",
+            "recognition",
+            "情绪",
+            "识别",
+            "情绪识别",
+        },
+        "emotion_regulation": {
+            "emotion",
+            "regulation",
+            "情绪",
+            "调节",
+            "情绪调节",
+        },
+        "cognitive_flexibility": {
+            "cognitive",
+            "flexibility",
+            "认知",
+            "灵活",
+            "认知灵活性",
+        },
+        "behavior_control": {
+            "behavior",
+            "control",
+            "行为",
+            "控制",
+            "行为控制",
+        },
+    }
 
     def __init__(self, root: Path | None = None) -> None:
         configured = os.environ.get("EEG_ASD_SENIOR_ROOT")
         base = root or (Path(configured) if configured else DEFAULT_SENIOR_ROOT)
         self.entity_root = base / "KG" / "knowledgegraph_rag" / "entity"
-        self._documents: list[dict[str, str]] | None = None
+        self._papers: list[dict[str, str]] | None = None
+        self.neo4j_uri = os.environ.get("EEG_ASD_NEO4J_URI")
+        self.neo4j_user = os.environ.get("EEG_ASD_NEO4J_USER")
+        self.neo4j_password = os.environ.get("EEG_ASD_NEO4J_PASSWORD")
 
     def retrieve(self, query: str, limit: int = 5) -> StructuredKnowledgeResult:
         tokens = self._tokens(query)
         if not tokens or limit <= 0:
-            return StructuredKnowledgeResult(query=query, items=[], mode=self.mode)
-        documents = self._load_documents()
+            return StructuredKnowledgeResult(query=query, items=[], mode=self.export_mode)
+        ranked_abilities = self._rank_abilities(query)
+        graph_limit = min(2, limit)
+        graph_items, graph_mode, graph_warning = self._retrieve_graph(
+            ranked_abilities[:graph_limit]
+        )
+        remaining = max(0, limit - len(graph_items))
+        paper_items = self._retrieve_papers(query, remaining, graph_mode)
+        items = [*graph_items, *paper_items]
+        if graph_warning:
+            items = [
+                item.model_copy(
+                    update={
+                        "limitations": list(
+                            dict.fromkeys([*item.limitations, graph_warning])
+                        )
+                    }
+                )
+                for item in items
+            ]
+        return StructuredKnowledgeResult(query=query, items=items, mode=graph_mode)
+
+    def _retrieve_graph(
+        self,
+        ranked_abilities: list[tuple[float, dict[str, str]]],
+    ) -> tuple[list[StructuredKnowledgeItem], str, str | None]:
+        if not ranked_abilities:
+            return [], self.export_mode, None
+        ability_names = [row["name"] for _score, row in ranked_abilities]
+        if self.neo4j_uri and self.neo4j_user and self.neo4j_password:
+            try:
+                return self._retrieve_live_graph(ranked_abilities, ability_names), self.live_mode, None
+            except Exception as exc:
+                warning = (
+                    "Configured senior Neo4j retrieval was unavailable "
+                    f"({type(exc).__name__}); the reviewed graph export was used."
+                )
+                return self._retrieve_export_graph(ranked_abilities), self.export_mode, warning
+        return (
+            self._retrieve_export_graph(ranked_abilities),
+            self.export_mode,
+            "Senior Neo4j was not configured; the same Ability-Dimension-Task "
+            "graph was traversed from its read-only export.",
+        )
+
+    def _retrieve_live_graph(
+        self,
+        ranked_abilities: list[tuple[float, dict[str, str]]],
+        ability_names: list[str],
+    ) -> list[StructuredKnowledgeItem]:
+        from neo4j import GraphDatabase  # type: ignore[import-not-found]
+
+        assert self.neo4j_uri is not None
+        assert self.neo4j_user is not None
+        assert self.neo4j_password is not None
+        driver = GraphDatabase.driver(
+            self.neo4j_uri,
+            auth=(self.neo4j_user, self.neo4j_password),
+            connection_timeout=3,
+        )
+        query = """
+        MATCH (a:Ability)
+        WHERE a.name IN $abilities
+        OPTIONAL MATCH (a)-[:REFLECTED_BY]->(d:Dimension)
+        OPTIONAL MATCH (d)-[:INCLUDE]->(t:Task)
+        RETURN a.id AS ability_id,
+               a.name AS ability,
+               a.description AS ability_description,
+               collect(DISTINCT {id:d.id, name:d.name, description:d.description}) AS dimensions,
+               collect(DISTINCT {id:t.id, name:t.name, target:t.assessmentTarget})[0..5] AS tasks
+        """
+        try:
+            driver.verify_connectivity()
+            with driver.session() as session:
+                records = [
+                    record.data()
+                    for record in session.run(query, abilities=ability_names)
+                ]
+        finally:
+            driver.close()
+        score_by_name = {row["name"]: score for score, row in ranked_abilities}
+        return [
+            self._graph_record_to_item(
+                record,
+                float(score_by_name.get(str(record.get("ability", "")), 0.0)),
+                self.live_mode,
+            )
+            for record in records
+        ]
+
+    def _retrieve_export_graph(
+        self,
+        ranked_abilities: list[tuple[float, dict[str, str]]],
+    ) -> list[StructuredKnowledgeItem]:
+        dimensions = {
+            row.get("id", ""): row
+            for row in self._read_optional(
+                self.entity_root / "assessment" / "dimension_nodes.csv"
+            )
+        }
+        tasks = {
+            row.get("id", ""): row
+            for row in self._read_optional(
+                self.entity_root / "assessment" / "task_nodes.csv"
+            )
+        }
+        ability_dimensions: dict[str, list[str]] = {}
+        for row in self._read_optional(
+            self.entity_root / "evidence" / "ability_dimension_relationships.csv"
+        ):
+            if row.get("TYPE") == "REFLECTED_BY":
+                ability_dimensions.setdefault(row.get("START_ID", ""), []).append(
+                    row.get("END_ID", "")
+                )
+        dimension_tasks: dict[str, list[str]] = {}
+        for row in self._read_optional(
+            self.entity_root / "assessment" / "dimension_task_relationships.csv"
+        ):
+            if row.get("TYPE") == "INCLUDE":
+                dimension_tasks.setdefault(row.get("START_ID", ""), []).append(
+                    row.get("END_ID", "")
+                )
+
+        items: list[StructuredKnowledgeItem] = []
+        for score, ability in ranked_abilities:
+            dimension_rows = [
+                dimensions[dimension_id]
+                for dimension_id in ability_dimensions.get(ability.get("id", ""), [])
+                if dimension_id in dimensions
+            ]
+            task_rows: list[dict[str, str]] = []
+            for dimension in dimension_rows:
+                for task_id in dimension_tasks.get(dimension.get("id", ""), []):
+                    if task_id in tasks and tasks[task_id] not in task_rows:
+                        task_rows.append(tasks[task_id])
+            record: dict[str, Any] = {
+                "ability_id": ability.get("id", ""),
+                "ability": ability.get("name", ""),
+                "ability_description": ability.get("description", ""),
+                "dimensions": [
+                    {
+                        "id": row.get("id", ""),
+                        "name": row.get("name", ""),
+                        "description": row.get("description", ""),
+                    }
+                    for row in dimension_rows
+                ],
+                "tasks": [
+                    {
+                        "id": row.get("id", ""),
+                        "name": row.get("name", ""),
+                        "target": row.get("assessmentTarget", ""),
+                    }
+                    for row in task_rows[:5]
+                ],
+            }
+            items.append(self._graph_record_to_item(record, score, self.export_mode))
+        return items
+
+    def _graph_record_to_item(
+        self,
+        record: dict[str, Any],
+        score: float,
+        mode: str,
+    ) -> StructuredKnowledgeItem:
+        ability_id = str(record.get("ability_id") or record.get("ability") or "unknown")
+        ability_name = str(record.get("ability", ""))
+        ability_description = str(record.get("ability_description", ""))
+        dimensions = [
+            dict(value)
+            for value in record.get("dimensions", [])
+            if isinstance(value, dict) and value.get("name")
+        ]
+        tasks = [
+            dict(value)
+            for value in record.get("tasks", [])
+            if isinstance(value, dict) and value.get("name")
+        ]
+        dimension_text = "; ".join(
+            f"{value.get('name', '')}: {value.get('description', '')}".strip()
+            for value in dimensions[:4]
+        )
+        task_text = "; ".join(
+            f"{value.get('name', '')}（目标: {value.get('target', '')}）".strip()
+            for value in tasks[:5]
+        )
+        chunk = (
+            f"能力节点 {ability_name}: {ability_description}。"
+            f"图谱路径 Ability-REFLECTED_BY-Dimension: {dimension_text or '无导出维度'}。"
+            f"Dimension-INCLUDE-Task: {task_text or '无导出任务'}。"
+        )
+        return StructuredKnowledgeItem(
+            evidence_id=f"SENIOR-KG-{ability_id}",
+            title=f"师兄 AbilityKG：{ability_name}",
+            source="senior_rag:Ability-REFLECTED_BY-Dimension-INCLUDE-Task",
+            retrieved_chunk=chunk[:1200],
+            summary=(
+                f"{ability_name} 关联 {len(dimensions)} 个评估维度和 {len(tasks)} 个任务。"
+            ),
+            relevance=round(float(score), 6),
+            metadata={
+                "mode": mode,
+                "ability_id": ability_id,
+                "dimension_ids": ",".join(
+                    str(value.get("id", "")) for value in dimensions
+                ),
+                "task_ids": ",".join(str(value.get("id", "")) for value in tasks),
+                "dimension_count": len(dimensions),
+                "task_count": len(tasks),
+                "graph_path": "Ability->Dimension->Task",
+            },
+            limitations=[
+                "师兄 AbilityKG 提供背景知识与任务关联，不是当前个案的临床证据。",
+                "能力节点由动态 Query 词法匹配选择，尚未进行临床相关性验证。",
+            ],
+        )
+
+    def _rank_abilities(self, query: str) -> list[tuple[float, dict[str, str]]]:
+        lowered = query.lower()
+        query_tokens = self._tokens(query)
+        ranked: list[tuple[float, dict[str, str]]] = []
+        for row in self._read_optional(
+            self.entity_root / "evidence" / "ability_nodes.csv"
+        ):
+            name = row.get("name", "")
+            text_tokens = self._tokens(
+                f"{name.replace('_', ' ')} {row.get('description', '')}"
+            )
+            score = float(len(query_tokens & text_tokens))
+            score += 2.0 * sum(
+                alias in lowered
+                for alias in self.ability_aliases.get(name, set())
+            )
+            if score > 0:
+                ranked.append((score, row))
+        return sorted(ranked, key=lambda item: (-item[0], item[1].get("id", "")))
+
+    def _retrieve_papers(
+        self,
+        query: str,
+        limit: int,
+        mode: str,
+    ) -> list[StructuredKnowledgeItem]:
+        if limit <= 0:
+            return []
+        documents = self._load_papers()
+        tokens = self._tokens(query)
         tokenized = [self._document_tokens(document) for document in documents]
         average_length = sum(len(items) for items in tokenized) / max(1, len(tokenized))
         frequencies = {
@@ -167,11 +469,11 @@ class SeniorKnowledgeAdapter:
             if score > 0:
                 ranked.append((score, document))
         ranked.sort(key=lambda item: (-item[0], item[1]["id"]))
-        items = [
+        return [
             StructuredKnowledgeItem(
-                evidence_id=document["id"] or f"local-{index}",
+                evidence_id=f"SENIOR-PAPER-{document['id'] or index}",
                 title=document["title"],
-                source=document["source"],
+                source=f"senior_rag:{document['source']}",
                 retrieved_chunk=document["chunk"][:800],
                 summary=document["chunk"][:360],
                 relevance=round(score, 6),
@@ -179,37 +481,22 @@ class SeniorKnowledgeAdapter:
                     "source_file": document["source_file"],
                     "year": document.get("year", ""),
                     "doi": document.get("doi", ""),
-                    "mode": self.mode,
+                    "mode": mode,
                 },
                 limitations=[
-                    "Locally exported background knowledge; not participant-level evidence.",
-                    "Retrieval relevance is lexical BM25 and has not been clinically validated.",
+                    "师兄 PubMed 导出语料仅作为背景文献，不是当前个案证据。",
+                    "论文通道使用 BM25 词法相关性，尚未进行临床相关性验证。",
                 ],
             )
             for index, (score, document) in enumerate(ranked[:limit], start=1)
         ]
-        return StructuredKnowledgeResult(query=query, items=items, mode=self.mode)
 
-    def _load_documents(self) -> list[dict[str, str]]:
-        if self._documents is not None:
-            return self._documents
+    def _load_papers(self) -> list[dict[str, str]]:
+        if self._papers is not None:
+            return self._papers
         documents: list[dict[str, str]] = []
-        ability_path = self.entity_root / "evidence" / "ability_nodes.csv"
-        for row in self._read(ability_path):
-            documents.append(
-                {
-                    "id": row.get("id", ""),
-                    "title": row.get("name", ""),
-                    "chunk": row.get("description", ""),
-                    "tags": "ASD autism ability 能力 孤独症",
-                    "source": "senior_kg_export:ability_nodes",
-                    "source_file": "evidence/ability_nodes.csv",
-                    "year": "",
-                    "doi": "",
-                }
-            )
         paper_path = self.entity_root / "paper" / "paper.csv"
-        for row in self._read(paper_path):
+        for row in self._read_optional(paper_path):
             documents.append(
                 {
                     "id": row.get("id", ""),
@@ -222,7 +509,7 @@ class SeniorKnowledgeAdapter:
                     "doi": row.get("doi", ""),
                 }
             )
-        self._documents = documents
+        self._papers = documents
         return documents
 
     @staticmethod
@@ -258,6 +545,10 @@ class SeniorKnowledgeAdapter:
     def _read(path: Path) -> list[dict[str, str]]:
         with path.open(encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle))
+
+    @classmethod
+    def _read_optional(cls, path: Path) -> list[dict[str, str]]:
+        return cls._read(path) if path.is_file() else []
 
 
 class LocalLiteratureAdapter:

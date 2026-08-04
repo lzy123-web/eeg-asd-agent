@@ -189,6 +189,8 @@ class ContextBuilder:
                 "Do not diagnose or rule out ASD.",
                 "Use only visible_results; absent fields are unavailable.",
                 "Replay and offline outputs must retain their provenance limitations.",
+                "Knowledge statements must cite exact Evidence IDs returned by retrieve_asd_knowledge.",
+                "Never invent, alter, or cite an Evidence ID absent from visible_results.",
             ],
         }
 

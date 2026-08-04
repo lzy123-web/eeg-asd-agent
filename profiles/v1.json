@@ -24,8 +24,12 @@
     "clinical_claim_allowed": false
   },
   "rag": {
-    "mode": "offline_bm25_local_export",
-    "live_senior_runtime": "unavailable"
+    "mode": "senior_graph_export_traversal+paper_bm25",
+    "graph_path": "Ability->Dimension->Task",
+    "live_mode": "senior_neo4j_graph_traversal+paper_bm25",
+    "live_dependency": "project extra: rag",
+    "live_configuration": "EEG_ASD_NEO4J_URI/USER/PASSWORD",
+    "live_senior_runtime": "unavailable_in_current_environment"
   },
   "provider": {
     "api": "openai_compatible_responses",

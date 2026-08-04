@@ -22,6 +22,9 @@ dev = [
   "mypy>=1.10,<2",
 ]
 eeg = []
+rag = [
+  "neo4j>=5.20,<7",
+]
 
 [project.scripts]
 eeg-asd-agent = "eeg_asd_agent.cli:app"

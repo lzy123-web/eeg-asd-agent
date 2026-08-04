@@ -15,7 +15,7 @@ class OfflineProvider:
 
     def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
         if purpose == "next_action":
-            return json.dumps(payload["fallback_action"], ensure_ascii=False)
+            return json.dumps(payload["fixture_fallback_action"], ensure_ascii=False)
         if purpose == "planning":
             case = dict(cast(dict[str, object], payload["case"]))
             allowed = list(cast(list[object], payload.get("allowed_tool_names", [])))
@@ -119,6 +119,8 @@ class OfflineProvider:
         knowledge_summary = "知识检索未执行或没有返回可白名单化条目。"
         knowledge_status = "unavailable"
         evidence_ids: list[str] = []
+        evidence_titles: list[str] = []
+        retrieval_mode = "unavailable"
         for raw in results:
             result = dict(cast(dict[str, object], raw))
             tool_name = str(result["tool_name"])
@@ -163,9 +165,21 @@ class OfflineProvider:
                     if isinstance(item, dict)
                 ]
                 evidence_ids = [item for item in evidence_ids if item]
+                evidence_titles = [
+                    str(cast(dict[str, object], item).get("title", ""))
+                    for item in raw_items
+                    if isinstance(item, dict)
+                ]
+                evidence_titles = [item for item in evidence_titles if item]
+                retrieval_mode = str(visible.get("mode", "unknown"))
                 knowledge_status = "available" if evidence_ids else "unavailable"
                 if evidence_ids:
-                    knowledge_summary = "检索到可追踪的离线知识条目；仅用于背景解释。"
+                    title_summary = "、".join(evidence_titles[:3])
+                    knowledge_summary = (
+                        f"师兄 RAG 以 {retrieval_mode} 模式返回 {len(evidence_ids)} 条可追踪背景证据"
+                        + (f"，包括：{title_summary}" if title_summary else "")
+                        + "；各结论必须以 Evidence ID 回溯，不能作为个案临床证据。"
+                    )
         unique_limitations = list(dict.fromkeys(limitations))
         return {
             "schema_version": "1.0",

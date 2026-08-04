@@ -193,7 +193,20 @@ def test_llm_next_action_loop_receives_sanitized_context(tmp_path: Path) -> None
         def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
             if purpose == "next_action":
                 self.payloads.append(payload)
-                return json.dumps(payload["fallback_action"], ensure_ascii=False)
+                allowed = list(payload["allowed_next_actions"])
+                observation_ids = [
+                    item["observation_id"] for item in payload["previous_observations"]
+                ]
+                return json.dumps(
+                    {
+                        "tool_name": allowed[0] if allowed else None,
+                        "arguments": {},
+                        "reason": "scripted legal manifest choice",
+                        "terminal": not allowed,
+                        "based_on_observations": observation_ids,
+                    },
+                    ensure_ascii=False,
+                )
             return self.reporter.generate_json(purpose, payload)
 
     provider = EchoNextActionProvider()
@@ -211,7 +224,46 @@ def test_llm_next_action_loop_receives_sanitized_context(tmp_path: Path) -> None
     assert "synthetic://" not in serialized
     assert "/Users/" not in serialized
     assert "delta_relative_power\"" not in serialized
+    assert "fallback_action" not in serialized
     assert all(len(payload["allowed_next_actions"]) <= 1 for payload in provider.payloads)
+
+
+def test_llm_planner_can_choose_a_legal_non_fallback_manifest_action() -> None:
+    class ChooseExistingResultProvider:
+        name = "scripted_provider"
+
+        def __init__(self) -> None:
+            self.payload: dict[str, object] | None = None
+
+        def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
+            assert purpose == "next_action"
+            self.payload = payload
+            return json.dumps(
+                {
+                    "tool_name": "inspect_existing_model_result",
+                    "arguments": {},
+                    "reason": "use the supplied result before further tabular checks",
+                    "terminal": False,
+                    "based_on_observations": [],
+                }
+            )
+
+    registry = build_core_registry()
+    state = _load_case("core_b_existing_model.json")
+    state.feature_table = {"higuchi_fd": 1.1}
+    state.user_request = "完成 ASD 辅助评估"
+    state.requested_goal = RequestedGoal.FULL_ASSESSMENT
+    state.completed_workflows = ["inspect_case"]
+    provider = ChooseExistingResultProvider()
+    planner = LLMNextActionPlanner(registry, provider)
+    decision = planner.decide(state)
+    assert decision.tool_name == "inspect_existing_model_result"
+    assert provider.payload is not None
+    assert set(provider.payload["allowed_next_actions"]) == {
+        "check_data_quality",
+        "inspect_existing_model_result",
+    }
+    assert "fallback_action" not in provider.payload
 
 
 def test_registry_rejects_illegal_arguments() -> None:

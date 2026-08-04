@@ -161,11 +161,13 @@ class OpenAIResponsesProvider:
         if purpose == "repair":
             return (
                 "Repair the supplied report into FinalAssessmentReportSpec. Do not add facts, "
-                "numbers, sources, or capabilities absent from the payload."
+                "numbers, sources, or capabilities absent from the payload. Cite only exact Evidence IDs "
+                "returned by retrieve_asd_knowledge."
             )
         return (
             "Return only FinalAssessmentReportSpec. Use only visible_results and capability_context. "
-            "Do not diagnose, invent numbers, expose paths, or claim an unexecuted tool succeeded."
+            "Do not diagnose, invent numbers, expose paths, or claim an unexecuted tool succeeded. "
+            "Every knowledge statement must use exact retrieved Evidence IDs; never invent an ID."
         )
 
     @staticmethod

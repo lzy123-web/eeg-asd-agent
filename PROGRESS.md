@@ -1,5 +1,19 @@
 # Progress
 
+## 2026-08-04 — senior RAG correction
+
+- [x] corrected the earlier BM25-only integration: it is no longer described as the senior RAG
+- [x] dynamic Query selects senior Ability nodes and traverses Ability→Dimension→Task relationships
+- [x] live Neo4j path uses environment-only configuration; current closed port falls back to the same CSV graph export
+- [x] senior PubMed export remains a second BM25 evidence channel
+- [x] stable `SENIOR-KG-*` / `SENIOR-PAPER-*` Evidence IDs reach Allowlist report Context
+- [x] report validation rejects invented Evidence IDs after one repair attempt
+- [x] actual existing-model E2E produced Query → 2 graph evidences + 3 paper evidences → ReportSpec citations
+- [x] LLM Planner candidates now come from Manifest preconditions, not a deterministic singleton
+- [x] true Provider payload no longer contains the deterministic fallback action
+- [x] scripted test demonstrates a legal non-fallback action can be selected
+- [x] targeted and full gates: 77 pytest, ruff, mypy, compileall passed
+
 ## 2026-08-04 — V1 runnable workflow completion
 
 - [x] synthetic / NPZ / MAT / equal-rate EDF inspection and deterministic EEG chain

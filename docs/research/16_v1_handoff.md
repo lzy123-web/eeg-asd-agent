@@ -21,7 +21,7 @@ raw EEG or feature table
 
 - `eeg_asd_agent/adapters/eeg.py`：synthetic / NPZ / MAT / EDF 读取，质量、预处理、事件、epoch、特征。
 - `eeg_asd_agent/adapters/baseline.py`：直接读取师兄 `best_mlp.pt` 的 NumPy 当前个案推理。
-- `eeg_asd_agent/adapters/senior.py`：动态查询后的本地 BM25 Evidence 检索。
+- `eeg_asd_agent/adapters/senior.py`：师兄 AbilityKG 图谱遍历、可选 Neo4j 与论文 BM25 Evidence。
 - `eeg_asd_agent/planning/incremental.py`：Deterministic 与逐轮 Provider `ActionDecision` Planner。
 - `eeg_asd_agent/tools/core_workflow.py`：EEG、baseline、query、RAG、report 闭环工具与 Manifest。
 - `eeg_asd_agent/reporting/core.py`：一次 Provider repair、确定性有限回退、Evidence ID 渲染。
@@ -75,14 +75,18 @@ SHA-256 版本标识，NumPy 直接加载六个 tensor buffer，实际执行当�
 完整数值。`retrieve_asd_knowledge` 返回严格 Evidence：`evidence_id`、title、source、
 retrieved_chunk、summary、relevance、metadata、limitations。
 
-师兄 live Neo4j runtime 当前不可用，所以没有伪装成在线 RAG。V1 对师兄 KG 和论文 CSV 建立
-`offline_bm25_local_export` 只读检索。ReportSpec 和最终 Renderer 都保留 Evidence ID。
+师兄 live Neo4j runtime 当前不可用，所以没有伪装成在线服务。当前 Adapter 先用 Query 匹配师兄
+Ability 节点，再按师兄原实现遍历 `Ability→Dimension→Task` 的导出关系，随后联合师兄 PubMed
+语料的 BM25 结果，运行模式为 `senior_graph_export_traversal+paper_bm25`。配置 Neo4j 环境变量后会
+优先运行同一条 Cypher。ReportSpec 只能引用检索实际返回的 `SENIOR-KG-*` / `SENIOR-PAPER-*` ID；
+不存在的 ID 在报告校验阶段被拒绝。
 
 ## 6. LLM Planner 与报告 Provider
 
 真实 Provider 接口使用 OpenAI-compatible Responses API，model/base URL/temperature/key 全由环境变量
 配置。每轮只请求一个 `ActionDecision`；Provider 收到脱敏 Case 摘要、先前白名单 Observation、
-Capability Manifests、完成状态和当前合法动作。
+Capability Manifests、完成状态，以及从 Manifest 前置条件独立计算的合法候选集合。真实 Provider
+Payload 不含 DeterministicPlanner 的预选动作；确定性 Planner 仅在 Provider 失败时接管。
 
 Schema 错误、未知工具、非法参数、提前停止、网络/Provider 异常会回退到 DeterministicPlanner。
 报告 Provider 只看到执行态 Allowlist Context；ReportSpec 第一次失败后允许一次 Provider repair，仍失败
@@ -117,7 +121,7 @@ cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 
 - 没有兼容的即用型开源 ASD-EEG checkpoint：保留搜索记录，使用师兄已训练受限模型。
 - 师兄 checkpoint 缺 scaler：使用代理 scaler并作为硬限制，不宣称性能。
-- live Neo4j/Spark RAG 不可用：降级为同接口本地 BM25，mode 明示。
+- live Neo4j/Spark RAG 不可用：遍历师兄同一图谱的只读 CSV 导出并联合论文 BM25，mode 明示。
 - 本地没有真实 EEG：使用 synthetic + 测试 NPZ，只证明软件链路。
 - 没有 Provider 凭据：真实 LLM 调用未运行；离线 NextAction 只证明接口和安全门。
 - 未使用远程 GPU：NumPy 可直接完成 checkpoint 前向，避免无必要的凭据和环境风险。

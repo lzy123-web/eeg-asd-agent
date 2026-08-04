@@ -51,6 +51,27 @@ class ToolRegistry:
     ) -> tuple[bool, list[str]]:
         """Evaluate the small, closed precondition language used by core manifests."""
         manifest = self.describe(name)
+        completed = set(state.completed_workflows)
+        failed = set(state.failed_workflows)
+        goal = state.requested_goal.value if state.requested_goal is not None else "unsupported"
+        model_stage_resolved = (
+            "inspect_existing_model_result" in completed
+            or "run_asd_baseline_model" in completed
+            or "research_replay_classifier" in completed
+            or "run_asd_baseline_model" in failed
+            or state.model_readiness.value == "blocked"
+            or goal != "full_assessment"
+        )
+        report_inputs_resolved = (
+            goal == "report_only"
+            or (
+                goal in {"full_assessment", "knowledge_search"}
+                and (
+                    "retrieve_asd_knowledge" in completed
+                    or "retrieve_asd_knowledge" in failed
+                )
+            )
+        )
         unmet = [
             field
             for field in manifest.required_state_fields
@@ -58,13 +79,33 @@ class ToolRegistry:
         ]
         checks = {
             "raw_eeg_present": bool(state.raw_files),
+            "case_inspected": "inspect_case" in completed,
+            "eeg_inspected": "inspect_eeg" in completed,
+            "eeg_quality_checked": "check_eeg_quality" in completed,
+            "eeg_preprocessed": "preprocess_eeg" in completed,
+            "events_extracted": "extract_events" in completed,
+            "epochs_created": "create_epochs" in completed,
             "feature_table_present": bool(state.feature_table),
+            "tabular_quality_required": state.input_type.value != "raw_eeg",
+            "feature_pipeline_ready": (
+                "extract_eeg_features" in completed
+                if state.input_type.value == "raw_eeg"
+                else "check_data_quality" in completed
+            ),
             "model_result_absent": state.existing_model_result is None,
             "model_result_present": state.existing_model_result is not None,
+            "external_model_result_pending": state.existing_model_result is not None
+            and "run_asd_baseline_model" not in completed
+            and "research_replay_classifier" not in completed,
             "model_readiness_not_blocked": state.model_readiness.value != "blocked",
             "model_checked": state.model_readiness.value != "unknown",
+            "model_stage_resolved": model_stage_resolved,
+            "baseline_failed": "run_asd_baseline_model" in failed,
             "data_quality_pass": state.data_quality == "pass",
+            "rag_query_allowed": goal in {"full_assessment", "knowledge_search"}
+            and model_stage_resolved,
             "rag_query_present": bool(state.rag_query),
+            "report_inputs_resolved": report_inputs_resolved,
             "report_spec_present": state.report_spec is not None,
             "request_supported": state.requested_goal is not None
             and state.requested_goal.value != "unsupported",

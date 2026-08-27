@@ -8,7 +8,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
-from eeg_asd_agent.schemas import ActionDecision, FinalAssessmentReportSpec, PlanSpec
+from eeg_asd_agent.schemas import (
+    ActionDecision,
+    AgentTurnDecision,
+    FinalAssessmentReportSpec,
+    PlanSpec,
+)
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -110,6 +115,10 @@ class OpenAIResponsesProvider:
 
     @staticmethod
     def _schema(purpose: str) -> tuple[dict[str, Any], str]:
+        if purpose == "agent_turn":
+            return OpenAIResponsesProvider._strict_schema(
+                AgentTurnDecision.model_json_schema()
+            ), "agent_turn"
         if purpose == "next_action":
             return OpenAIResponsesProvider._strict_schema(
                 ActionDecision.model_json_schema()
@@ -148,6 +157,19 @@ class OpenAIResponsesProvider:
 
     @staticmethod
     def _system_prompt(purpose: str) -> str:
+        if purpose == "agent_turn":
+            return (
+                "You are the controller of a specialist EEG-ASD research Agent. "
+                "On every turn, update a concise high-level plan and choose at most one tool from "
+                "allowed_next_actions. A selected tool must appear in a current plan step and its action "
+                "must be non-terminal; observe the result on the next turn before finishing. The harness "
+                "validates and executes but never chooses workflow order. "
+                "Use the user request, case state, observations, memory, and capability manifests to decide "
+                "whether to inspect, reuse, compare, recompute, retrieve, report, or finish. Existing assets "
+                "are optional evidence and never imply automatic skipping. RAG can be called whenever it helps "
+                "the current goal. Never expose raw EEG, local paths, feature values, secrets, or internal "
+                "ToolResult objects. Do not diagnose ASD or prescribe treatment. Return only AgentTurnDecision."
+            )
         if purpose == "next_action":
             return (
                 "Return exactly one ActionDecision. Choose only allowed_next_actions and legal arguments. "

@@ -5,6 +5,12 @@ from pathlib import Path
 from time import perf_counter
 from typing import Protocol
 
+from eeg_asd_agent.agent import (
+    AgentContextBuilder,
+    AgentRuntime,
+    LLMAgentController,
+    SQLiteAgentMemory,
+)
 from eeg_asd_agent.execution import (
     AllowlistProjector,
     ContextBuilder,
@@ -14,7 +20,6 @@ from eeg_asd_agent.execution import (
 from eeg_asd_agent.intent import RuleBasedIntentParser
 from eeg_asd_agent.planning import (
     DeterministicPlanner,
-    LLMNextActionPlanner,
     LLMPlanner,
     NextActionPlanner,
 )
@@ -23,6 +28,7 @@ from eeg_asd_agent.reporting import HTMLRenderer
 from eeg_asd_agent.schemas import ActionDecision, AssessmentCaseState, PlanSpec, RequestedGoal
 from eeg_asd_agent.tools.builtin import build_default_registry
 from eeg_asd_agent.tools.core_workflow import build_core_registry
+from eeg_asd_agent.tools.domain_catalog import build_agent_registry
 from eeg_asd_agent.tracing import ArtifactStore, TraceLogger, render_trace_html
 
 
@@ -59,8 +65,9 @@ def run_workflow(
     request: str,
     output_dir: Path,
     *,
-    planner_kind: str = "deterministic",
+    planner_kind: str = "agent",
     provider: WorkflowProvider | None = None,
+    memory_path: Path | None = None,
 ) -> dict[str, Path]:
     run_started = perf_counter()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -70,6 +77,10 @@ def run_workflow(
         "report_spec.json",
         "report.md",
         "report.html",
+        "agent_turns.jsonl",
+        "agent_contexts.json",
+        "agent_plan.json",
+        "memory_summary.json",
     ):
         stale = output_dir / stale_name
         if stale.exists():
@@ -81,43 +92,86 @@ def run_workflow(
     store = ArtifactStore(output_dir)
     trace = TraceLogger(output_dir / "trace.jsonl", state.trace_id)
     active_provider = provider or OfflineReportGenerator()
-    registry = build_core_registry(report_provider=active_provider)
+    registry = (
+        build_agent_registry(report_provider=active_provider)
+        if planner_kind in {"agent", "llm"}
+        else build_core_registry(report_provider=active_provider)
+    )
     goal = RuleBasedIntentParser().parse(request)
     state.user_request = request
     state.requested_goal = goal
-    deterministic = NextActionPlanner(
-        registry, use_manifests=planner_kind != "deterministic-no-manifest"
-    )
-    planner: NextActionPlanner | LLMNextActionPlanner
-    if planner_kind == "llm":
-        planner = LLMNextActionPlanner(registry, active_provider, fallback=deterministic)
-    else:
-        planner = deterministic
     normalizer = ObservationNormalizer()
-    outcome = IncrementalWorkflowExecutor(registry, normalizer, trace).execute(state, planner)
+    planner_payloads: list[dict[str, object]] = []
+    agent_turns: list[object] = []
+    memory: SQLiteAgentMemory | None = None
+    if planner_kind in {"agent", "llm"}:
+        memory = SQLiteAgentMemory(memory_path or (output_dir / "agent_memory.sqlite"))
+        agent_context = AgentContextBuilder(
+            registry,
+            AllowlistProjector(registry),
+            memory,
+        )
+        controller = LLMAgentController(
+            registry,
+            active_provider,
+            agent_context,
+            max_steps=24,
+        )
+        agent_outcome = AgentRuntime(
+            registry,
+            controller,
+            memory,
+            normalizer,
+            trace,
+            max_steps=24,
+        ).execute(state)
+        decisions = [turn.action for turn in agent_outcome.turns]
+        results = agent_outcome.results
+        planner_payloads = controller.payload_history
+        agent_turns = list(agent_outcome.turns)
+        planner_label = (
+            "offline_agentic_simulation"
+            if active_provider.name.startswith("offline")
+            else "llm_agentic_plan_act_observe_replan"
+        )
+    else:
+        deterministic = NextActionPlanner(
+            registry, use_manifests=planner_kind != "deterministic-no-manifest"
+        )
+        legacy_outcome = IncrementalWorkflowExecutor(
+            registry, normalizer, trace
+        ).execute(state, deterministic)
+        decisions = legacy_outcome.decisions
+        results = legacy_outcome.results
+        planner_label = "deterministic_incremental_test_baseline"
     store.write_json(
         "plan.json",
         {
-            "planner_kind": (
-                "llm_incremental_next_action"
-                if isinstance(planner, LLMNextActionPlanner)
-                else "deterministic_incremental_state_driven"
-            ),
+            "planner_kind": planner_label,
             "case_id": state.case_id,
-            "decisions": outcome.decisions,
-            "fallback_count": getattr(planner, "fallback_count", 0),
+            "decisions": decisions,
+            "agent_plan": state.agent_plan,
+            "fallback_count": 0,
         },
     )
-    if isinstance(planner, LLMNextActionPlanner):
-        store.write_json("planner_payloads.json", planner.payload_history)
-    store.write_text("plan.mmd", decisions_to_mermaid(outcome.decisions))
-    for index, result in enumerate(outcome.results, start=1):
+    if planner_payloads:
+        store.write_json("planner_payloads.json", planner_payloads)
+        store.write_json("agent_contexts.json", planner_payloads)
+    if agent_turns:
+        for turn in agent_turns:
+            store.append_jsonl("agent_turns.jsonl", turn)
+    if state.agent_plan is not None:
+        store.write_json("agent_plan.json", state.agent_plan)
+    if memory is not None:
+        store.write_json("memory_summary.json", memory.export_summary(state.case_id))
+    store.write_text("plan.mmd", decisions_to_mermaid(decisions))
+    for index, result in enumerate(results, start=1):
         store.write_json(f"tool_results/{index:02d}_{result.tool_name}.json", result)
     for observation in state.observations:
         store.append_jsonl("observations.jsonl", observation)
 
     report_generation_result = next(
-        (item for item in outcome.results if item.tool_name == "generate_report_spec"),
+        (item for item in results if item.tool_name == "generate_report_spec"),
         None,
     )
     recorded_context = (
@@ -132,7 +186,7 @@ def run_workflow(
         context = ContextBuilder(registry, projector).report_context(state, goal)
     store.write_json("llm_payload.json", context)
     render_result = next(
-        (item for item in outcome.results if item.tool_name == "render_report"),
+        (item for item in results if item.tool_name == "render_report"),
         None,
     )
     if state.report_spec is not None:
@@ -151,11 +205,11 @@ def run_workflow(
         {
             "total_duration_ms": round((perf_counter() - run_started) * 1000, 3),
             "tool_duration_ms": {
-                result.tool_name: round(result.duration_ms, 3) for result in outcome.results
+                result.tool_name: round(result.duration_ms, 3) for result in results
             },
             "provider": active_provider.name,
             "planner_kind": planner_kind,
-            "planner_fallback_count": getattr(planner, "fallback_count", 0),
+            "planner_fallback_count": 0,
             "usage": usage,
             "evaluation_mode": (
                 "offline_structural_validation"
@@ -182,8 +236,16 @@ def run_workflow(
         "plan_mermaid": output_dir / "plan.mmd",
         "run_stats": output_dir / "run_stats.json",
     }
-    if isinstance(planner, LLMNextActionPlanner):
+    if planner_payloads:
         artifacts["planner_payloads"] = output_dir / "planner_payloads.json"
+        artifacts["agent_contexts"] = output_dir / "agent_contexts.json"
+    if agent_turns:
+        artifacts["agent_turns"] = output_dir / "agent_turns.jsonl"
+    if state.agent_plan is not None:
+        artifacts["agent_plan"] = output_dir / "agent_plan.json"
+    if memory is not None:
+        artifacts["memory"] = memory.path
+        artifacts["memory_summary"] = output_dir / "memory_summary.json"
     if state.report_spec is not None:
         artifacts.update(
             {

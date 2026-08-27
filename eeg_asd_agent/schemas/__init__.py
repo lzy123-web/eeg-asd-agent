@@ -1,5 +1,9 @@
 from eeg_asd_agent.schemas.models import (
     ActionDecision,
+    AgentPlan,
+    AgentPlanItem,
+    AgentPlanItemStatus,
+    AgentTurnDecision,
     AssessmentCaseState,
     CaseStatus,
     EEGProcessingConfig,
@@ -27,6 +31,10 @@ from eeg_asd_agent.schemas.models import (
 __all__ = [
     "AssessmentCaseState",
     "ActionDecision",
+    "AgentPlan",
+    "AgentPlanItem",
+    "AgentPlanItemStatus",
+    "AgentTurnDecision",
     "CaseStatus",
     "EEGProcessingConfig",
     "FinalAssessmentReportSpec",

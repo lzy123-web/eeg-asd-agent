@@ -1,189 +1,207 @@
-# EEG-ASD Workflow Agent
+# EEG-ASD Full-domain Agent
 
-这是一个面向 EEG 自闭症辅助评估研究的、非临床的工作流智能体。它接收自然语言请求和
-`AssessmentCaseState`，根据当前输入及上一轮 Observation 逐轮选择封闭工具，最终只把
-白名单字段交给报告 Provider，并从严格 `FinalAssessmentReportSpec` 确定性渲染 Markdown / HTML。
+这是一个面向 EEG-ASD 研究评估的专用 Agent Harness。它的核心不是把 EEG、模型、RAG、报告
+预先排成固定流水线，而是让 LLM 根据用户目标、当前个案状态和刚得到的 Observation，逐轮决定：
 
-V1 已跑通的主链是：
+- 当前任务应该做什么；
+- 下一步调用哪个 EEG-ASD Tool；
+- 已有资产应复用、检查、比较、重算还是忽略；
+- 是否需要 RAG、报告或继续分析；
+- 什么时候用户目标已经满足。
+
+用户只提供一份 EEG 也可以启动完整任务。特征表、模型结果、能力评估和既有报告都是可选资产，
+不是运行前提，也不是自动跳过某一步的控制信号。当前 V1 先完成 Agent 系统骨架和闭环；具体领域能力
+按 Manifest 挂载，尚未实现的能力会作为 `enabled=false` 的显式 Stub 出现在能力目录中，而不会伪装成功。
+
+本系统仅用于研究与软件验证，不是临床诊断系统，不输出 ASD 确诊、排除诊断或治疗处方。
+
+## 现在搭好的 Agent 闭环
 
 ```text
-raw EEG / feature table / existing model result
-  → incremental NextAction Planner
-  → deterministic EEG tools
-  → restricted current-case pretrained baseline
-  → execution-grounded RAG query
-  → senior AbilityKG graph traversal + senior paper retrieval
-  → allowlisted LLM/Offline ReportSpec JSON
-  → deterministic Markdown + HTML
+User Request + Optional Assets
+  → AssessmentCaseState
+  → Agent Context（脱敏状态、Observation、Memory、完整能力目录、当前合法动作）
+  → LLM AgentTurnDecision（修订 Plan + 只选择一个 Next Action）
+  → Harness 校验（Schema、Closed Registry、参数、硬前置条件、预算）
+  → Tool 执行
+  → ToolResult
+  → ObservationNormalizer + StateUpdate
+  → StateReducer + SQLite Memory
+  → 回到 LLM 重新决策
+  → Goal Satisfied / Waiting / Blocked
 ```
 
-它不是临床诊断系统，不输出 ASD 确诊、排除诊断、CARS 严重程度或治疗处方。当前合成 EEG、
-师兄模型和 RAG 的真实性与限制会同时进入 ToolResult、Observation、ReportSpec 和 Trace。
+完整架构图见 [agentic-runtime-architecture.png](figures/agentic-runtime-architecture.png)，实现说明见
+[Agent 架构交接](docs/research/17_agentic_architecture.md)。
 
-## Agent 接收什么、做什么、输出什么
+## LLM 与 Harness 的职责边界
 
-- 输入：合成 URI、NPZ、MAT、等采样率 EDF，已有特征表，或已有模型结果。
-- Agent：读取 Case State 和已完成步骤，每轮返回一个合法 `ActionDecision`，执行后重新规划。
-- Tool：只做确定性信号计算、受限模型推理、知识检索、Schema 生成和渲染。
-- Allowlist：每个 Manifest 按工作流声明 LLM 可见字段；新字段默认不可见。
-- Context：Planner、工具选择和报告生成使用独立、脱敏、执行态 Context。
-- 输出：`plan.json`、逐工具结果、Observation、Provider Payload、ReportSpec、Markdown/HTML、Trace 和运行统计。
-
-与固定 Pipeline 的区别是：已有特征会跳过 EEG 链；已有模型结果会跳过推理；质量请求会在
-质量 Observation 后停止；质量不通过会阻断模型、RAG 和报告。与旧 Boundary-aware/完整性门控
-原型的区别是：边界检查现在是 Manifest、Readiness 和 Context 的组成部分，不再是系统主线。
-
-## V1 执行架构
-
-```mermaid
-flowchart TD
-    U["Natural-language request"] --> S["AssessmentCaseState"]
-    S --> P["LLM or deterministic NextAction Planner"]
-    P --> R["Closed ToolRegistry"]
-    R --> E["Deterministic EEG / model / RAG tool"]
-    E --> O["ToolResult → Observation → StateUpdate"]
-    O --> P
-    O --> A["Deny-by-default Allowlist"]
-    A --> C["Execution-grounded report Context"]
-    C --> J["Strict ReportSpec JSON"]
-    J --> V["Schema validation → one repair → limited fallback"]
-    V --> M["Deterministic Markdown / HTML"]
-```
-
-## 真实工具链
-
-| Tool | V1 行为 | 真实性 |
+| 组件 | 负责 | 不负责 |
 |---|---|---|
-| `inspect_case` | 判断输入资产与跳过条件 | REAL |
-| `inspect_eeg` | synthetic / NPZ / MAT / EDF 只读检查 | REAL |
-| `check_eeg_quality` | 有限值、平直通道、幅值、时长和通道门控 | REAL |
-| `preprocess_eeg` | 1–40 Hz、可用时 50 Hz notch、128 Hz polyphase resample | REAL |
-| `extract_events` | 读取事件；缺失时显式标记固定窗推断 | REAL |
-| `create_epochs` | 2 秒确定性 epoch | REAL |
-| `extract_eeg_features` | Welch PSD、相对频带功率、FAA、theta coherence、Higuchi FD | REAL |
-| `check_data_quality` | 已有特征表有限值检查 | REAL |
-| `check_model_readiness` | 资产、特征兼容性、插补和已知训练风险门控 | REAL |
-| `run_asd_baseline_model` | NumPy 读取师兄已训练 `best_mlp.pt`，执行当前个案前向推理 | RESTRICTED_REAL |
-| `research_replay_classifier` | 只保留师兄历史 OOF 行回放；不是当前个案推理 | REPLAY |
-| `build_asd_rag_query` | 从已执行模型/特征可用性构造动态查询 | REAL |
-| `retrieve_asd_knowledge` | 师兄 Ability→Dimension→Task 图谱遍历 + 论文 BM25；可选 live Neo4j | ADAPTER |
-| `generate_report_spec` | 真实 Provider 或明确标记的 OfflineProvider | ADAPTER / OFFLINE |
-| `render_report` | 不添加事实的 Markdown Renderer；HTML 同步生成 | REAL |
+| LLM Agent Controller | 理解用户目标、修订计划、选择下一工具、决定是否结束 | 直接读本地文件、绕过 Registry、修改状态 |
+| Agent Context Builder | 提供脱敏 Case 摘要、白名单 Observation、Memory 摘要、Manifest 和合法动作 | 给出确定性预选答案、暴露原始 EEG/特征值/绝对路径 |
+| Closed Tool Registry | 注册能力、校验参数和硬前置条件、拒绝未知/禁用工具 | 根据输入类型或固定顺序替 LLM 选择工具 |
+| Tool | 执行一个封闭能力并返回 `ToolResult + StateUpdate` | 直接修改 Case State、决定下一步 |
+| StateReducer | 以唯一通道应用状态更新 | 推断用户意图或工作流顺序 |
+| SQLite Memory | 本地保存完整 Case 与跨运行 Turn；只向 LLM 投影安全摘要 | 把原始数据或完整 ToolResult 放入 Prompt |
+| Report Provider | 只基于 Allowlist Context 输出严格 ReportSpec JSON | 查看原始 EEG、完整特征矩阵、绝对路径或编造 Evidence ID |
+| Renderer | 将合法 ReportSpec 确定性渲染为 Markdown/HTML | 调用 LLM 或添加新事实 |
 
-算法只借鉴 `eegsys-bottom-main` 的 polyphase resample、Welch 与 bandpower 思路，不引入其
-HDFS、RabbitMQ 或服务进程。paicli 只提供 Registry、预算、停滞检测等设计参考，不调用 Java Runtime、
-Shell、MCP 或代码生成工具。
+Harness 计算的是“现在硬条件上能执行哪些动作”，不是“现在应该执行哪个动作”。正常情况下 LLM 会
+同时看到多个候选，例如检查 EEG、检查已有结果、先构造 RAG Query 或生成有限报告；顺序由当前请求决定。
 
-## 已训练基线的事实边界
+## AgentTurnDecision 协议
 
-V1 直接使用师兄 `best_mlp.pt`，不重新训练。该检查点是 7→32→16→3 MLP，目标是三档
-`ability_score`，不是 ASD/TD 二分类。Adapter 通过 NumPy 读取 PyTorch zip tensor，模型版本包含
-checkpoint SHA-256；因此 Mac 本地无需 PyTorch，也没有使用远程 GPU。
+真实 LLM 每轮只能输出一个严格 JSON 对象：
 
-必须保留的限制：
-
-- 原训练脚本是行级随机切分，不是已验证的 subject-level split；
-- 原训练 scaler 未保存，V1 使用 `dynamic_features.csv` 重建代理 scaler；
-- 原始 EEG 路径产出的同名特征，其语义和量纲尚未证明与训练特征完全一致；
-- 缺失模态输入使用参考均值插补，并逐字段报告；
-- softmax 仅是不经验证的模型置信值，不是 ASD 概率；
-- 不声称泛化性能、临床有效性或诊断能力。
-
-开源模型审计见 `docs/research/16_v1_handoff.md`：EEGPT、EEG-DINO 等公开权重是表征模型，
-仍需 ASD 下游训练；公开 autism-detector 使用 8 个临床结构字段而不是 EEG。V1 没有为了“用开源”
-把不兼容模型硬接进主链。
-
-## RAG 与 Evidence
-
-`build_asd_rag_query` 只使用请求主题、输入类型、模型模式和“特征名是否可用”，不发送完整特征值。
-`retrieve_asd_knowledge` 返回：
-
-```text
-evidence_id, title, source, retrieved_chunk, summary,
-relevance, metadata, limitations
+```json
+{
+  "plan": {
+    "revision": 3,
+    "objective": "验证已有结果并补充知识解释",
+    "strategy": "先检查既有结果，再根据 Observation 决定重算或检索",
+    "steps": [],
+    "completion_criteria": ["用户要求已由执行结果支持"]
+  },
+  "action": {
+    "tool_name": "inspect_existing_model_result",
+    "arguments": {},
+    "reason": "用户要求先验证既有结果",
+    "terminal": false,
+    "based_on_observations": []
+  },
+  "goal_satisfied": false,
+  "assistant_message": null,
+  "replan_reason": "根据用户目标建立首轮计划"
+}
 ```
 
-检索先按动态 Query 选择师兄 `Ability` 节点，再沿师兄代码原有的
-`Ability-[:REFLECTED_BY]->Dimension-[:INCLUDE]->Task` 路径取图谱知识；第二路在师兄 PubMed
-导出语料上执行 BM25。当前本机没有 Neo4j 服务，因此运行模式为
-`senior_graph_export_traversal+paper_bm25`：遍历的是师兄同一套节点与关系 CSV，而不是把 KG
-节点混成普通文本搜索。若配置 `EEG_ASD_NEO4J_URI/USER/PASSWORD` 且服务可达，则优先执行同一条
-Cypher，模式切换为 `senior_neo4j_graph_traversal+paper_bm25`；live 模式需安装 `rag` extra。
+它不是一次性 DAG：`plan` 是可修订的高层任务计划，`action` 每轮最多一个。工具执行后，新
+Observation 会进入下一轮 Context。若 LLM 输出未知工具、非法参数、虚构 Observation ID 或违反硬前置
+条件，Agent Runtime 会拒绝并阻断本次运行；不会暗中切换成固定 Pipeline。
 
-所有结果使用稳定的 `SENIOR-KG-*` 或 `SENIOR-PAPER-*` Evidence ID。Report Provider 只能看到
-Allowlist 后的 Evidence；ReportSpec 若引用检索结果中不存在的 ID，会触发一次修复，仍不合法则生成
-确定性有限报告。
+## EEG-ASD 能力面
 
-## 快速运行四条 E2E
+当前 Registry 同时表达“已实现能力”和“目标能力”。这让 LLM 能理解完整 Agent 边界，又不会调用空壳。
+
+| 能力族 | 当前可执行能力 | 已声明但禁用的扩展点 |
+|---|---|---|
+| EEG 数据 | `inspect_eeg`、`check_eeg_quality`、`preprocess_eeg`、`extract_events`、`create_epochs`、`extract_eeg_features` | `analyze_eeg_patterns`、`visualize_eeg_analysis` |
+| 评估与模型 | `check_data_quality`、`check_model_readiness`、`run_asd_baseline_model`、`inspect_existing_model_result`、`research_replay_classifier` | `build_eeg_asd_profile`、`estimate_asd_severity`、`estimate_ability_dimensions`、`compare_assessment_results`、`conduct_structured_assessment`、`train_asd_research_model` |
+| RAG | `build_asd_rag_query`、`retrieve_asd_knowledge` | 后续可增加干预知识和更多检索器 |
+| 报告 | `generate_report_spec`、`render_report` | `parse_assessment_report` |
+| 控制 | `inspect_case`、`request_human_review`、受限停止工具 | — |
+
+已实现工具仍保留 `REAL`、`ADAPTER`、`RESTRICTED_REAL`、`REPLAY`、`OFFLINE` 等真实性标签。
+禁用 Stub 标记为 `STUB`，Registry 不允许执行。
+
+## RAG 如何进入 Agent
+
+RAG 是 Agent 可选择的能力，不是固定在模型推理之后的流水线节点：
+
+1. LLM 可根据请求在信号分析前、分析中或分析后选择 `build_asd_rag_query`；
+2. Query Tool 根据当前已执行 Observation 构造查询，不读取完整特征值；
+3. `retrieve_asd_knowledge` 调用师兄 AbilityKG 导出图谱遍历和论文 BM25；若配置 live Neo4j，
+   可切换到同一图谱路径的在线检索；
+4. Retriever 返回带稳定 Evidence ID 的结构化证据；
+5. 报告 Provider 只能引用 Allowlist Context 中真实存在的 Evidence ID。
+
+本机当前模式是 `senior_graph_export_traversal+paper_bm25`。它读取师兄 Ability、Dimension、Task
+节点与关系 CSV，并沿 `Ability → Dimension → Task` 检索；论文通道读取师兄导出的 PubMed 语料。
+详细来源与降级边界见 [RAG integration](docs/research/14_senior_rag_integration.md)。
+
+## 同一资产，不同任务，不同动作
+
+已有结果不会自动导致“跳过模型”，有特征也不会自动决定“直接推理”。例如同一个 Case 可以提出：
+
+```bash
+# 只解释已有结果：Agent 可以先 inspect_existing_model_result
+--request "解释已有模型结果，并检索相关知识"
+
+# 验证已有结果：Agent 可以选择 check_model_readiness + run_asd_baseline_model
+--request "重新运行当前研究模型，验证并比较已有结果"
+
+# 先查知识：Agent 可以在 EEG/模型之前选择 RAG
+--request "先检索与当前问题相关的 ASD 证据，再决定怎样分析 EEG"
+
+# 单项任务：质量 Observation 后结束
+--request "只检查这个 EEG 的质量，不运行模型，不检索，不生成报告"
+```
+
+这些语义由真实 LLM 决策。默认 Offline 模式只是可复现的 Manifest-driven Agent 协议模拟，不能作为
+“LLM 会正确规划”的实验结论。
+
+## 运行
 
 ```bash
 cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 
-# 1. 合成 raw EEG → EEG chain → current-case baseline → RAG → report
+# 默认：完整 Agent Runtime + Offline Agent simulation
 .venv/bin/python -m eeg_asd_agent.cli run \
   --case demo_cases/01_raw_eeg_full_assessment.json \
-  --request "分析这个 EEG，完成 ASD 辅助评估，并检索相关知识生成报告" \
-  --offline --output-dir artifacts/v1/raw
+  --request "分析这个 EEG，完成 ASD 相关研究评估；需要时检索知识并生成报告" \
+  --offline --output-dir artifacts/agent/raw
 
-# 2. feature table：跳过全部 EEG 工具
-.venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/04_feature_table_full_assessment.json \
-  --request "根据现有特征完成 ASD 辅助评估并生成报告" \
-  --offline --output-dir artifacts/v1/features
-
-# 3. existing model result：跳过模型推理
-.venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/core_b_existing_model.json \
-  --request "解释已有模型结果，检索相关知识并生成报告" \
-  --offline --output-dir artifacts/v1/existing-model
-
-# 4. quality only：质量后停止，不调用模型/RAG/报告
-.venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/02_raw_eeg_quality_only.json \
-  --request "只检查这个 EEG 的质量，不运行模型，不检索，不生成报告" \
-  --offline --output-dir artifacts/v1/quality-only
-```
-
-`synthetic://` 由固定 seed 生成信号，只证明链路可执行。真实 NPZ 最小格式为 `data`
-（channels × samples）、`sfreq`，可选 `channel_names`、`events`、`unit` 和 `synthetic`。
-
-## LLM Planner 与报告 Provider
-
-离线默认使用确定性 Planner 和 OfflineReportGenerator。要离线验证“每轮 Provider 返回一个
-NextAction”的接口，可加 `--planner llm --offline`；这仍是 fixture，不是 LLM 效果。
-
-真实 OpenAI-compatible Responses Provider 只从环境变量读取配置：
-
-```bash
+# 同一套 Runtime，使用真实 OpenAI-compatible Provider
 export OPENAI_API_KEY="..."
 export OPENAI_MODEL="<pinned-model-id>"
 export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional
-export OPENAI_TEMPERATURE="0"                       # optional, default 0
-
+export OPENAI_TEMPERATURE="0"                       # optional
 .venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/01_raw_eeg_full_assessment.json \
-  --request "分析 EEG 并生成辅助评估报告" \
-  --no-offline --output-dir artifacts/v1/provider
+  --case demo_cases/core_b_existing_model.json \
+  --request "验证已有结果；由你决定复用、重算和检索顺序" \
+  --no-offline --output-dir artifacts/agent/provider
+
+# 固定规划器只作为测试/对照基线，不是 Agent Runtime 的隐藏回退
+.venv/bin/python -m eeg_asd_agent.cli run \
+  --case demo_cases/04_feature_table_full_assessment.json \
+  --request "检查数据质量" \
+  --planner deterministic --offline --output-dir artifacts/baseline
 ```
 
-每轮 Provider 收到：脱敏请求、Case State 摘要、白名单 Observation、Capability Manifests、
-已完成/失败步骤，以及由 Manifest 前置条件独立计算出的全部合法候选动作；真实 Provider 看不到
-DeterministicPlanner 的预选答案。它只能返回严格 `ActionDecision`。未知工具、非法参数、提前停止、
-Schema 错误或网络故障会回退到 DeterministicPlanner。报告 Provider 只看到 Allowlist Context，
-非法 ReportSpec 允许一次 Provider repair，仍失败则生成确定性有限报告。
+未配置 API Key 时，CLI 会明确降级到 `offline_agentic_simulation`，继续验证完整协议，但不声称完成了
+真实 LLM 运行。
 
-## 安装、检查与复现
+## Memory 与恢复
+
+每次 Agent 运行会生成本地 SQLite Memory。完整 Case State 只保存在本机；LLM 只看到最近 Turn 的
+安全摘要。恢复后 Turn index 单调递增，每个新请求获得独立 step budget，旧记录不会被覆盖。
+
+```bash
+.venv/bin/python -m eeg_asd_agent.cli resume \
+  --memory artifacts/agent/raw/agent_memory.sqlite \
+  --case-id demo-01-raw-synthetic \
+  --request "重新检索最新相关知识并更新报告" \
+  --offline --output-dir artifacts/agent/resumed
+```
+
+## 每次运行的可审计产物
+
+```text
+plan.json                 最终 Planner 类型、全部单步决策、最终高层 Plan
+agent_plan.json           最后一次 Plan 修订
+agent_turns.jsonl         每轮 Plan + Action + Stop 判断
+agent_contexts.json       每轮实际交给 Agent Controller 的脱敏 Context
+agent_memory.sqlite       可恢复的本地 Case / Turn Memory
+memory_summary.json       可公开查看的 Memory 摘要
+tool_results/*.json       完整本地工具结果（不直接进入 LLM）
+observations.jsonl        规范化 Observation
+llm_payload.json          报告 Provider 的 Allowlist Context
+report_spec.json          严格 FinalAssessmentReportSpec
+report.md / report.html   确定性 Renderer 输出
+trace.jsonl / trace.html  执行 Trace
+run_stats.json            Provider、运行模式与耗时
+```
+
+## 安装与验收
 
 ```bash
 cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 /Users/nick/.cache/codex-runtimes/codex-primary-runtime/dependencies/python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev,eeg]'
 
-# 仅需连接师兄 Neo4j live 服务时安装
-.venv/bin/python -m pip install -e '.[rag]'
-
 .venv/bin/python -m eeg_asd_agent.cli tools list
-.venv/bin/python -m eeg_asd_agent.cli tools describe run_asd_baseline_model
+.venv/bin/python -m eeg_asd_agent.cli tools describe build_asd_rag_query
 .venv/bin/python -m eeg_asd_agent.cli profile show
 
 .venv/bin/pytest -q
@@ -192,18 +210,16 @@ cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
 .venv/bin/python -m compileall -q eeg_asd_agent
 ```
 
-运行产物中，`llm_payload.json` 是报告 Context；使用 LLM Planner 时另有
-`planner_payloads.json`。两者都不包含 raw EEG、完整 feature table、绝对路径、内部模型对象、
-密钥或完整 ToolResult。
+当前架构测试覆盖：多候选动作 Context、同资产不同目标、Observation 驱动重规划、非法动作拒绝、
+raw EEG 单输入闭环、严格 Agent JSON Schema、Memory 跨运行恢复与隐私过滤。
 
-## 与师兄项目的关系
+## 当前边界
 
-师兄目录保持只读。V1 只通过受限 Adapter 读取：
+- 真实 LLM Provider 接口已接入，但本轮没有凭据运行；Offline 模式不是 LLM 效果证据。
+- 合成 EEG 只验证代码路径；没有真实受试者数据与临床验证。
+- 当前模型只是受限占位能力，模型质量不是本轮架构目标。
+- 完整能力目录中的 Profile、能力维度、比较、结构化评估等工具仍是禁用 Stub，下一阶段逐个实现。
+- 不包含 Multi-Agent、Web 前端、大模型微调或临床性能主张。
 
-- `best_mlp.pt` 与 `dynamic_features.csv`：当前个案受限前向推理；
-- `*_with_oof.csv`：仅历史回放；
-- Ability/Dimension/Task 节点与关系 CSV：复现师兄 AbilityKG 图谱遍历；paper CSV：论文 BM25 通道。
-
-未复制师兄代码中的硬编码密钥，当前未连接 Neo4j/Spark 服务，未修改旧工程，未训练或微调新模型。
-
-完整实现交接与失败记录见 [V1 handoff](docs/research/16_v1_handoff.md)。
+师兄工程、旧 `bishe` 和 `paicli-main` 均保持只读。paicli 只借鉴 Harness、工具注册、预算、停滞检测、
+Provider 分层和 Memory 思路，不调用其 Java Runtime、Shell、MCP 或代码生成能力。

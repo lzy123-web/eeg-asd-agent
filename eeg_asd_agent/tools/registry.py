@@ -51,6 +51,8 @@ class ToolRegistry:
     ) -> tuple[bool, list[str]]:
         """Evaluate the small, closed precondition language used by core manifests."""
         manifest = self.describe(name)
+        if not manifest.enabled:
+            return False, ["tool_disabled"]
         completed = set(state.completed_workflows)
         failed = set(state.failed_workflows)
         goal = state.requested_goal.value if state.requested_goal is not None else "unsupported"
@@ -109,9 +111,31 @@ class ToolRegistry:
             "report_spec_present": state.report_spec is not None,
             "request_supported": state.requested_goal is not None
             and state.requested_goal.value != "unsupported",
+            "observations_present": bool(state.observations),
         }
         unmet.extend(condition for condition in manifest.preconditions if not checks.get(condition, False))
         return not unmet, unmet
+
+    def available_actions(self, state: AssessmentCaseState) -> list[str]:
+        """Return executable actions; relevance and ordering remain Agent decisions.
+
+        The registry enforces only capability availability and hard preconditions.
+        It deliberately does not infer a workflow from the input type or user goal.
+        """
+        available: list[str] = []
+        completed = set(state.completed_workflows)
+        failed = set(state.failed_workflows)
+        for manifest in self.manifests():
+            if not manifest.enabled:
+                continue
+            if manifest.name in completed and not manifest.repeatable:
+                continue
+            if manifest.name in failed and not manifest.repeatable:
+                continue
+            ready, _unmet = self.preconditions_met(manifest.name, state)
+            if ready:
+                available.append(manifest.name)
+        return available
 
     def execute(
         self,
@@ -120,6 +144,15 @@ class ToolRegistry:
         arguments: dict[str, object] | None = None,
     ) -> ToolResult:
         tool = self._get(name)
+        if not tool.manifest.enabled:
+            return ToolResult(
+                tool_name=name,
+                manifest_version=tool.manifest.version,
+                status=ToolStatus.BLOCKED,
+                errors=["tool capability is declared but not implemented"],
+                limitations=tool.manifest.limitations,
+                implementation_kind=tool.manifest.real_or_fake,
+            )
         args = arguments or {}
         unexpected = set(args) - set(tool.manifest.required_inputs) - set(tool.manifest.optional_inputs)
         if unexpected:
@@ -167,6 +200,22 @@ class ToolRegistry:
     ) -> ToolExecutionOutcome:
         """Execute a tool and require an explicit state update for incremental runs."""
         tool = self._get(name)
+        if not tool.manifest.enabled:
+            result = ToolResult(
+                tool_name=name,
+                manifest_version=tool.manifest.version,
+                status=ToolStatus.BLOCKED,
+                errors=["tool capability is declared but not implemented"],
+                limitations=tool.manifest.limitations,
+                implementation_kind=tool.manifest.real_or_fake,
+            )
+            return ToolExecutionOutcome(
+                result=result,
+                state_update=StateUpdate(
+                    failed_workflows_add=[name],
+                    limitations_add=result.limitations,
+                ),
+            )
         args = arguments or {}
         unexpected = set(args) - set(tool.manifest.required_inputs) - set(tool.manifest.optional_inputs)
         if unexpected:

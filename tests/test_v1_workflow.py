@@ -151,7 +151,9 @@ def test_four_required_e2e_routes(
         assert report["knowledge_interpretation"]["evidence_ids"]
 
 
-def test_quality_observation_blocks_full_workflow(tmp_path: Path) -> None:
+def test_quality_observation_changes_actions_and_yields_limited_report(
+    tmp_path: Path,
+) -> None:
     sfreq = 128
     source = tmp_path / "artifact.npz"
     np.savez(
@@ -175,11 +177,13 @@ def test_quality_observation_blocks_full_workflow(tmp_path: Path) -> None:
     )
     actions = _actions(output)
     assert actions[:3] == ["inspect_case", "inspect_eeg", "check_eeg_quality"]
-    assert actions[3] == "stop_with_insufficient_input"
+    assert "preprocess_eeg" not in actions
     assert "run_asd_baseline_model" not in actions
-    assert "retrieve_asd_knowledge" not in actions
-    assert "report_spec" not in artifacts
+    assert "retrieve_asd_knowledge" in actions
+    assert "generate_report_spec" in actions
+    assert "report_spec" in artifacts
     assert state.data_quality == "blocked"
+    assert state.execution_status.value == "completed"
 
 
 def test_llm_next_action_loop_receives_sanitized_context(tmp_path: Path) -> None:
@@ -191,22 +195,8 @@ def test_llm_next_action_loop_receives_sanitized_context(tmp_path: Path) -> None
             self.reporter = OfflineReportGenerator()
 
         def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
-            if purpose == "next_action":
+            if purpose == "agent_turn":
                 self.payloads.append(payload)
-                allowed = list(payload["allowed_next_actions"])
-                observation_ids = [
-                    item["observation_id"] for item in payload["previous_observations"]
-                ]
-                return json.dumps(
-                    {
-                        "tool_name": allowed[0] if allowed else None,
-                        "arguments": {},
-                        "reason": "scripted legal manifest choice",
-                        "terminal": not allowed,
-                        "based_on_observations": observation_ids,
-                    },
-                    ensure_ascii=False,
-                )
             return self.reporter.generate_json(purpose, payload)
 
     provider = EchoNextActionProvider()
@@ -223,9 +213,11 @@ def test_llm_next_action_loop_receives_sanitized_context(tmp_path: Path) -> None
     serialized = json.dumps(provider.payloads, ensure_ascii=False)
     assert "synthetic://" not in serialized
     assert "/Users/" not in serialized
-    assert "delta_relative_power\"" not in serialized
+    assert '"feature_table": {' not in serialized
+    assert '"raw_files": [' not in serialized
     assert "fallback_action" not in serialized
-    assert all(len(payload["allowed_next_actions"]) <= 1 for payload in provider.payloads)
+    assert any(len(payload["allowed_next_actions"]) >= 3 for payload in provider.payloads)
+    assert all("capability_catalog" in payload for payload in provider.payloads)
 
 
 def test_llm_planner_can_choose_a_legal_non_fallback_manifest_action() -> None:
@@ -260,6 +252,7 @@ def test_llm_planner_can_choose_a_legal_non_fallback_manifest_action() -> None:
     assert decision.tool_name == "inspect_existing_model_result"
     assert provider.payload is not None
     assert set(provider.payload["allowed_next_actions"]) == {
+        "build_asd_rag_query",
         "check_data_quality",
         "inspect_existing_model_result",
     }

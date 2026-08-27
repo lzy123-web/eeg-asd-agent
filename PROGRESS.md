@@ -1,5 +1,22 @@
 # Progress
 
+## 2026-08-06 — Full-domain Agent Runtime architecture
+
+- [x] 默认执行从旧增量规则 Planner 切换为 LLM-owned `AgentTurnDecision` 循环
+- [x] 每轮修订 `AgentPlan`，最多执行一个 Tool，再以 Observation/StateUpdate 重规划
+- [x] Registry 只校验能力和硬前置条件，不再根据输入类型替 Agent 排序
+- [x] 已有特征、模型结果和报告变为可选资产；复用/重算/比较由用户目标决定
+- [x] RAG 可在分析前、中、后选择，不再硬绑定在模型阶段之后
+- [x] 完整 EEG-ASD 能力面以 Manifest 注册；未实现能力为 `enabled=false` Stub
+- [x] Agent Controller Context 与 Report Context 分离，均执行路径/原始数据/特征值过滤
+- [x] SQLite Case/Turn Memory 支持恢复，跨运行 Turn 不覆盖且每个请求独立计算预算
+- [x] 非法 Agent Action 受控阻断；确定性 Planner 只保留为测试基线，不做隐藏回退
+- [x] raw EEG 单输入可完成离线 Agent 协议闭环，不要求用户预先提供量表或模型结果
+- [x] 新增 Agent 架构图、README 和 `docs/research/17_agentic_architecture.md`
+- [x] 87 个全量测试通过，其中 10 个专门验证 Agent 架构行为
+- [ ] 真实 Provider 运行（当前无凭据；Offline simulation 不作为 LLM 效果证据）
+- [ ] 逐项实现 Profile、能力评估、结果比较等禁用 Stub
+
 ## 2026-08-04 — senior RAG correction
 
 - [x] corrected the earlier BM25-only integration: it is no longer described as the senior RAG

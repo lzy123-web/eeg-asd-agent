@@ -1,8 +1,10 @@
 {
   "name": "offline",
-  "planner": "deterministic",
-  "provider": "offline_fixture",
-  "max_steps": 16,
+  "runtime": "agentic_plan_act_observe_replan",
+  "planner": "offline_manifest_driven_agent_simulation",
+  "provider": "offline_fixture_not_llm_evidence",
+  "deterministic_planner": "separate_test_baseline",
+  "max_steps_per_request": 24,
   "stuck_limit": 2,
   "retry_limit": 1,
   "evaluation_mode": "fixture",

@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 artifacts/*
 !artifacts/.gitkeep
+
+# macOS
+.DS_Store

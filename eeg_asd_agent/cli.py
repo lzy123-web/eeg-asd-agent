@@ -6,13 +6,14 @@ from typing import Annotated
 
 import typer
 
+from eeg_asd_agent.agent import SQLiteAgentMemory
 from eeg_asd_agent.benchmarks import BenchmarkSuite, CorePlanningBenchmark
 from eeg_asd_agent.dashboard import build_dashboard
 from eeg_asd_agent.integrity import audit_integrity
 from eeg_asd_agent.providers import OpenAIResponsesProvider, ProviderConfigurationError
 from eeg_asd_agent.schemas import AssessmentCaseState
 from eeg_asd_agent.tools.builtin import build_default_registry
-from eeg_asd_agent.tools.core_workflow import build_core_registry
+from eeg_asd_agent.tools.domain_catalog import build_agent_registry
 from eeg_asd_agent.tracing import render_trace_html
 from eeg_asd_agent.workflow import build_plan, run_workflow
 
@@ -47,13 +48,15 @@ def _load_provider(offline: bool) -> OpenAIResponsesProvider | None:
 
 @tools_app.command("list")
 def tools_list() -> None:
-    registry = build_core_registry()
+    registry = build_agent_registry()
     rows = [
         {
             "name": manifest.name,
             "category": manifest.category,
             "version": manifest.version,
             "implementation": manifest.real_or_fake.value,
+            "enabled": manifest.enabled,
+            "repeatable": manifest.repeatable,
         }
         for manifest in registry.manifests()
     ]
@@ -62,7 +65,8 @@ def tools_list() -> None:
 
 @tools_app.command("describe")
 def tools_describe(name: str) -> None:
-    registry = build_core_registry() if name in build_core_registry().names() else build_default_registry()
+    agent_registry = build_agent_registry()
+    registry = agent_registry if name in agent_registry.names() else build_default_registry()
     manifest = registry.describe(name)
     typer.echo(manifest.model_dump_json(indent=2))
 
@@ -98,7 +102,7 @@ def run_command(
     case: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
     request: Annotated[str, typer.Option()],
     output_dir: Annotated[Path, typer.Option()] = Path("artifacts/demo"),
-    planner: Annotated[str, typer.Option()] = "deterministic",
+    planner: Annotated[str, typer.Option()] = "agent",
     offline: Annotated[bool, typer.Option()] = True,
 ) -> None:
     state = _load_case(case)
@@ -112,6 +116,41 @@ def run_command(
         provider=provider,
     )
     typer.echo(json.dumps({key: str(value) for key, value in artifacts.items()}, ensure_ascii=False, indent=2))
+
+
+@app.command("resume")
+def resume_command(
+    memory: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    case_id: Annotated[str, typer.Option()],
+    request: Annotated[str, typer.Option()],
+    output_dir: Annotated[Path, typer.Option()] = Path("artifacts/resumed"),
+    offline: Annotated[bool, typer.Option()] = True,
+) -> None:
+    store = SQLiteAgentMemory(memory)
+    state = store.load_state(case_id)
+    if state is None:
+        raise typer.BadParameter(f"case_id {case_id!r} is not present in Agent memory")
+    # SQLite keeps the durable cross-run history. These fields describe only the
+    # active request, so a resumed task receives a fresh local action window.
+    state.action_history = []
+    state.current_action = None
+    state.latest_assistant_message = None
+    provider = _load_provider(offline)
+    artifacts = run_workflow(
+        state,
+        request,
+        output_dir,
+        planner_kind="agent",
+        provider=provider,
+        memory_path=memory,
+    )
+    typer.echo(
+        json.dumps(
+            {key: str(value) for key, value in artifacts.items()},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 def _benchmark_command(suite: str, output_dir: Path) -> None:

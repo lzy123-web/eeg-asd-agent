@@ -64,12 +64,23 @@ def _manifest(
     preconditions: list[str] | None = None,
     limitations: list[str] | None = None,
     retry_limit: int = 1,
+    description: str | None = None,
+    use_when: list[str] | None = None,
+    avoid_when: list[str] | None = None,
+    tags: list[str] | None = None,
+    enabled: bool = True,
+    repeatable: bool = False,
+    idempotent: bool = True,
 ) -> ToolCapabilityManifest:
     active_goals = goals or ALL_CORE_GOALS
     return ToolCapabilityManifest(
         name=name,
         version=version,
         category=category,
+        description=description or name.replace("_", " "),
+        use_when=use_when or [],
+        avoid_when=avoid_when or [],
+        tags=tags or ["eeg-asd", category],
         required_inputs=required_inputs or [],
         optional_inputs=optional_inputs or [],
         required_state_fields=required_state_fields or [],
@@ -85,6 +96,9 @@ def _manifest(
         limitations=limitations or [],
         allowlisted_fields={goal.value: allowlisted_fields for goal in active_goals},
         retry_limit=retry_limit,
+        enabled=enabled,
+        repeatable=repeatable,
+        idempotent=idempotent,
         implementation_reference=f"eeg_asd_agent.tools.core_workflow:{name}",
         real_or_fake=implementation,
     )
@@ -172,6 +186,8 @@ def build_core_registry(
         ],
         allowlisted_fields=["input_type", "feature_count", "has_model_result", "has_report"],
         implementation=ImplementationKind.REAL,
+        description="Inspect which case assets exist without deciding how they must be used.",
+        use_when=["The Agent needs an inventory of available EEG-ASD case assets."],
     )
 
     def inspect_case(
@@ -222,6 +238,7 @@ def build_core_registry(
             "unit_assumption",
         ],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=eeg_goals,
         preconditions=["raw_eeg_present", "case_inspected"],
         limitations=[
@@ -273,6 +290,7 @@ def build_core_registry(
             "pipeline_version",
         ],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=eeg_goals,
         preconditions=["raw_eeg_present", "case_inspected", "eeg_inspected"],
         limitations=["Signal thresholds are engineering gates, not clinical EEG interpretation."],
@@ -318,6 +336,7 @@ def build_core_registry(
             "synthetic",
         ],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
         preconditions=[
             "raw_eeg_present",
@@ -357,6 +376,7 @@ def build_core_registry(
             "synthetic",
         ],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
         preconditions=[
             "raw_eeg_present",
@@ -396,6 +416,7 @@ def build_core_registry(
             "synthetic",
         ],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
         preconditions=[
             "raw_eeg_present",
@@ -434,6 +455,7 @@ def build_core_registry(
             "feature_semantics",
         ],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.FEATURE_EXTRACTION],
         preconditions=[
             "raw_eeg_present",
@@ -474,6 +496,7 @@ def build_core_registry(
         produced_outputs=["quality_status", "issue_count", "issues", "finite_feature_ratio"],
         allowlisted_fields=["quality_status", "issue_count", "issues", "finite_feature_ratio"],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=[
             RequestedGoal.FULL_ASSESSMENT,
             RequestedGoal.QUALITY_CHECK,
@@ -518,6 +541,7 @@ def build_core_registry(
         produced_outputs=["readiness_status", "reason", "model_mode"],
         allowlisted_fields=["readiness_status", "reason", "model_mode"],
         implementation=ImplementationKind.REAL,
+        repeatable=True,
         goals=[
             RequestedGoal.FULL_ASSESSMENT,
             RequestedGoal.QUALITY_CHECK,
@@ -540,17 +564,22 @@ def build_core_registry(
             readiness = ModelReadiness.BLOCKED
             reason = "data quality is blocked"
             mode = "unavailable"
-        elif state.existing_model_result is not None:
-            readiness = ModelReadiness.RESTRICTED
-            reason = "an existing result can be interpreted but must not be re-run"
-            mode = "existing_result"
         else:
             available, reason, missing = baseline.readiness(state.feature_table)
             if available:
                 readiness = ModelReadiness.RESTRICTED
                 mode = "current_case_pretrained_research_baseline"
+                if state.existing_model_result is not None:
+                    reason = (
+                        f"{reason}; an imported result is also present and the Agent may "
+                        "reuse, compare, or recompute according to the user goal"
+                    )
                 if missing:
                     reason = f"{reason}; {len(missing)} of 7 inputs require reference-mean imputation"
+            elif state.existing_model_result is not None:
+                readiness = ModelReadiness.RESTRICTED
+                reason = "only the imported model result is currently available for interpretation"
+                mode = "existing_result"
             elif "senior_row_index" in state.metadata_summary:
                 readiness = ModelReadiness.RESTRICTED
                 reason = "current-case baseline unavailable; historical OOF replay remains available"
@@ -613,11 +642,15 @@ def build_core_registry(
         goals=[RequestedGoal.FULL_ASSESSMENT],
         preconditions=[
             "feature_table_present",
-            "model_result_absent",
             "model_readiness_not_blocked",
             "model_checked",
             "data_quality_pass",
         ],
+        repeatable=True,
+        use_when=[
+            "The user asks for current-case inference, recomputation, validation, or comparison."
+        ],
+        avoid_when=["The user explicitly asks to interpret an imported result without recomputation."],
         limitations=baseline.limitations([]),
     )
 
@@ -674,8 +707,9 @@ def build_core_registry(
         preconditions=[
             "model_result_present",
             "case_inspected",
-            "external_model_result_pending",
         ],
+        repeatable=True,
+        use_when=["A supplied result should be interpreted, audited, reused, or compared."],
         limitations=[
             "The tool validates and projects a supplied result; it does not re-run or validate the originating model."
         ],
@@ -780,7 +814,11 @@ def build_core_registry(
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
-        preconditions=["case_inspected", "rag_query_allowed"],
+        preconditions=["case_inspected"],
+        repeatable=True,
+        use_when=[
+            "The Agent needs a retrieval query before, during, or after EEG/model analysis."
+        ],
         limitations=[
             "The query contains only high-level case state and never raw signal or complete feature values."
         ],
@@ -851,6 +889,10 @@ def build_core_registry(
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
+        repeatable=True,
+        use_when=[
+            "The Agent needs external ASD/EEG knowledge for planning, interpretation, or reporting."
+        ],
         limitations=[
             "检索复用师兄 AbilityKG 的 Ability-Dimension-Task 图谱路径，并联合其 PubMed 导出语料。",
             "配置 Neo4j 环境变量时优先查询师兄图数据库；否则遍历同一图谱的只读 CSV 导出。",
@@ -902,7 +944,9 @@ def build_core_registry(
             RequestedGoal.KNOWLEDGE_SEARCH,
             RequestedGoal.REPORT_ONLY,
         ],
-        preconditions=["report_inputs_resolved"],
+        preconditions=["case_inspected", "observations_present"],
+        repeatable=True,
+        use_when=["The Agent judges that the user goal requires a structured report now."],
         limitations=[
             "OfflineReportGenerator validates structure and flow only; it is not LLM efficacy evidence."
         ]
@@ -944,6 +988,7 @@ def build_core_registry(
             RequestedGoal.REPORT_ONLY,
         ],
         preconditions=["report_spec_present"],
+        repeatable=True,
         limitations=["Renderer is deterministic and cannot add missing evidence."],
     )
 
@@ -964,6 +1009,48 @@ def build_core_registry(
         )
 
     registry.register(FunctionTool(render_manifest, render_report))
+
+    review_manifest = _manifest(
+        "request_human_review",
+        category="control",
+        produced_outputs=["review_required", "reason", "case_status"],
+        allowlisted_fields=["review_required", "reason", "case_status"],
+        implementation=ImplementationKind.REAL,
+        preconditions=["case_inspected"],
+        retry_limit=0,
+        description=(
+            "Pause the current case and record that qualified human input or review is required."
+        ),
+        use_when=[
+            "Evidence is restricted, required information is missing, or the user asks for human review."
+        ],
+        limitations=[
+            "This records and pauses for review; it does not contact a person or make a clinical decision."
+        ],
+    )
+
+    def request_human_review(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        reason = next(
+            iter([*state.pending_requirements, *state.warnings]),
+            "Qualified human review is required before continuing this research assessment.",
+        )
+        return _outcome(
+            review_manifest,
+            ToolStatus.SUCCESS,
+            data={
+                "review_required": True,
+                "reason": reason,
+                "case_status": CaseStatus.WAITING.value,
+            },
+            update=StateUpdate(
+                execution_status=CaseStatus.WAITING,
+                pending_requirements_add=[reason],
+            ),
+        )
+
+    registry.register(FunctionTool(review_manifest, request_human_review))
 
     for stop_name, reason in (
         ("stop_with_insufficient_input", "Required case input is unavailable."),

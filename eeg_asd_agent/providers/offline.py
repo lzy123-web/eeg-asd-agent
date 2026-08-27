@@ -14,6 +14,8 @@ class OfflineProvider:
     name = "offline_fixture"
 
     def generate_json(self, purpose: str, payload: dict[str, object]) -> str:
+        if purpose == "agent_turn":
+            return json.dumps(self._offline_agent_turn(payload), ensure_ascii=False)
         if purpose == "next_action":
             return json.dumps(payload["fixture_fallback_action"], ensure_ascii=False)
         if purpose == "planning":
@@ -51,6 +53,232 @@ class OfflineProvider:
         if purpose == "repair":
             return str(payload.get("raw_output", "{}"))
         raise ValueError(f"unsupported purpose: {purpose}")
+
+    @staticmethod
+    def _offline_agent_turn(payload: dict[str, object]) -> dict[str, object]:
+        """Manifest-driven Agent fixture used when no real provider is configured.
+
+        This exercises the same plan/act/observe/replan protocol but is explicitly
+        not evidence about LLM planning quality.
+        """
+        request = str(payload.get("user_request", "")).lower()
+        state = dict(cast(dict[str, object], payload["case_state"]))
+        inventory = dict(cast(dict[str, object], state["asset_inventory"]))
+        raw_eeg_count = inventory.get("raw_eeg_count", 0)
+        has_raw_eeg = isinstance(raw_eeg_count, int) and raw_eeg_count > 0
+        allowed = [str(item) for item in cast(list[object], payload["allowed_next_actions"])]
+        completed = {
+            str(item) for item in cast(list[object], state.get("completed_actions", []))
+        }
+        observations = list(cast(list[object], payload.get("previous_observations", [])))
+        observation_ids = [
+            str(cast(dict[str, object], item).get("observation_id", ""))
+            for item in observations
+            if isinstance(item, dict)
+        ]
+        observation_ids = [item for item in observation_ids if item]
+
+        readiness_only = any(
+            word in request
+            for word in (
+                "模型是否具备",
+                "模型就绪",
+                "执行条件",
+                "readiness only",
+            )
+        )
+        quality_only = not readiness_only and any(
+            word in request for word in ("只检查", "只看质量", "quality only")
+        )
+        feature_only = any(word in request for word in ("只提取", "仅提取", "feature only"))
+        knowledge_only = any(
+            word in request
+            for word in ("只检索", "仅检索", "重新检索", "knowledge only")
+        )
+        explain_existing = (
+            any(word in request for word in ("解释已有", "解释当前", "interpret existing"))
+            and not any(word in request for word in ("验证", "重跑", "重新", "verify", "rerun"))
+        )
+        verify_existing = any(
+            word in request
+            for word in (
+                "验证",
+                "重跑",
+                "重新分析",
+                "重新运行",
+                "复现",
+                "verify",
+                "rerun",
+            )
+        )
+        rag_first = any(word in request for word in ("先检索", "先查", "rag first"))
+        wants_report = not any(
+            word in request
+            for word in ("不生成报告", "不要报告", "无需报告", "no report")
+        ) and not quality_only and not feature_only
+        current_run_actions = {
+            str(cast(dict[str, object], item).get("tool_name"))
+            for item in cast(list[object], payload.get("action_history", []))
+            if isinstance(item, dict)
+        }
+        force_repeat: set[str] = set()
+        if knowledge_only or any(
+            word in request
+            for word in ("重新检索", "更新知识", "刷新知识", "refresh knowledge")
+        ):
+            force_repeat.update({"build_asd_rag_query", "retrieve_asd_knowledge"})
+        if explain_existing:
+            force_repeat.add("inspect_existing_model_result")
+        if verify_existing:
+            force_repeat.update({"check_model_readiness", "run_asd_baseline_model"})
+        if wants_report and (
+            force_repeat
+            or any(
+                word in request
+                for word in ("重新生成报告", "更新报告", "refresh report")
+            )
+        ):
+            force_repeat.update({"generate_report_spec", "render_report"})
+
+        if readiness_only:
+            preferred = [
+                "inspect_case",
+                "inspect_eeg" if has_raw_eeg else "check_data_quality",
+                "check_eeg_quality" if has_raw_eeg else "check_data_quality",
+                "preprocess_eeg",
+                "extract_events",
+                "create_epochs",
+                "extract_eeg_features",
+                "check_model_readiness",
+            ]
+            finish_after = {"check_model_readiness"}
+        elif quality_only:
+            preferred = [
+                "inspect_case",
+                "inspect_eeg" if has_raw_eeg else "check_data_quality",
+                "check_eeg_quality" if has_raw_eeg else "check_data_quality",
+            ]
+            finish_after = {"check_eeg_quality", "check_data_quality"}
+        elif feature_only:
+            preferred = [
+                "inspect_case",
+                "inspect_eeg",
+                "check_eeg_quality",
+                "preprocess_eeg",
+                "extract_events",
+                "create_epochs",
+                "extract_eeg_features",
+                "check_data_quality",
+            ]
+            finish_after = {"extract_eeg_features", "check_data_quality"}
+        elif knowledge_only:
+            preferred = [
+                "inspect_case",
+                "build_asd_rag_query",
+                "retrieve_asd_knowledge",
+                "generate_report_spec",
+                "render_report",
+            ]
+            finish_after = {"render_report"}
+        elif explain_existing:
+            preferred = [
+                "inspect_case",
+                "inspect_existing_model_result",
+                "build_asd_rag_query",
+                "retrieve_asd_knowledge",
+                "generate_report_spec",
+                "render_report",
+            ]
+            finish_after = {"render_report"}
+        else:
+            signal_chain = [
+                "inspect_eeg",
+                "check_eeg_quality",
+                "preprocess_eeg",
+                "extract_events",
+                "create_epochs",
+                "extract_eeg_features",
+            ]
+            if not has_raw_eeg:
+                signal_chain = ["check_data_quality"]
+            model_chain = ["check_model_readiness", "run_asd_baseline_model"]
+            if explain_existing and not verify_existing:
+                model_chain = ["inspect_existing_model_result"]
+            knowledge_chain = ["build_asd_rag_query", "retrieve_asd_knowledge"]
+            if rag_first:
+                preferred = ["inspect_case", *knowledge_chain, *signal_chain, *model_chain]
+            else:
+                preferred = ["inspect_case", *signal_chain, *model_chain, *knowledge_chain]
+            if wants_report:
+                preferred.extend(["generate_report_spec", "render_report"])
+            finish_after = {"render_report"} if wants_report else {
+                "run_asd_baseline_model",
+                "inspect_existing_model_result",
+            }
+
+        def is_pending(name: str) -> bool:
+            return name not in completed or (
+                name in force_repeat and name not in current_run_actions
+            )
+
+        pending_preferred = [name for name in preferred if is_pending(name)]
+        selected = next((name for name in pending_preferred if name in allowed), None)
+        goal_satisfied = bool(finish_after & completed) and selected is None
+
+        if selected is None and not goal_satisfied:
+            non_control = [
+                name
+                for name in allowed
+                if not name.startswith("stop_with_") and name not in completed
+            ]
+            selected = non_control[0] if non_control else None
+            goal_satisfied = selected is None
+
+        current_plan = payload.get("current_plan")
+        revision = 1
+        if isinstance(current_plan, dict):
+            revision = int(current_plan.get("revision", 0)) + 1
+        remaining = [name for name in preferred if is_pending(name)]
+        plan = {
+            "revision": revision,
+            "objective": str(payload.get("user_request", "Complete the EEG-ASD task")),
+            "strategy": "offline manifest-driven Agent simulation; real LLM required for semantic planning claims",
+            "steps": [
+                {
+                    "step_id": f"p{index:02d}",
+                    "objective": name.replace("_", " "),
+                    "status": "in_progress" if name == selected else "pending",
+                    "candidate_tools": [name],
+                    "depends_on": [f"p{index - 1:02d}"] if index > 1 else [],
+                }
+                for index, name in enumerate(remaining, start=1)
+            ],
+            "completion_criteria": [
+                "The explicit user goal is satisfied by executed observations.",
+                "No unexecuted capability is represented as successful.",
+            ],
+        }
+        return {
+            "plan": plan,
+            "action": {
+                "tool_name": selected,
+                "arguments": {},
+                "reason": (
+                    f"Offline Agent fixture selected {selected} from the current legal manifests."
+                    if selected is not None
+                    else "Executed observations satisfy the offline task contract."
+                ),
+                "terminal": selected is None,
+                "based_on_observations": observation_ids,
+            },
+            "goal_satisfied": selected is None and goal_satisfied,
+            "assistant_message": (
+                "Offline Agent simulation completed the requested EEG-ASD task."
+                if selected is None
+                else None
+            ),
+            "replan_reason": "Updated after the latest case state and observation.",
+        }
 
     @staticmethod
     def _offline_plan(input_kind: str, goal: str, allowed: list[object]) -> list[str]:

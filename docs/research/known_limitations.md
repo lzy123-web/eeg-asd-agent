@@ -1,21 +1,23 @@
 # Known Limitations
 
-1. The senior model path is historical OOF replay. It is not prospective inference and cannot support
-   an ASD diagnosis, exclusion, calibrated probability, or clinical severity claim.
-2. The senior live RAG runtime is not runnable here: the Neo4j package is absent and the local Bolt
-   port is closed. `SeniorKnowledgeAdapter` uses exported senior KG/paper CSV files and always reports
-   `mode=offline_local_index`.
-3. `OfflineReportGenerator` is deterministic fixture infrastructure. It validates schema,
-   orchestration, allowlist projection, and fallback behavior—not real LLM quality.
-4. No participant-level EDF/BDF/SET/FIF file is available in the scanned assets. Phase 2 therefore
-   uses feature tables and existing results rather than claiming a real raw-EEG E2E.
-5. The current `NextActionPlanner` is deterministic and intentionally small. It scores perfectly on
-   the 18-case local benchmark, but those cases are hand-designed implementation checks and do not
-   establish generalization to unseen requests.
-6. Core allowlists are structural and deny by default, but semantic correctness still depends on
-   truthful tool normalization. The tests cover unknown nested fields, paths, raw-like keys, and
-   secret-like keys.
-7. Existing historical benchmark artifacts are fixture-mode harness checks. They are not evidence
-   that an LLM planner or reporter outperforms a baseline.
-8. No real LLM Provider was configured. `llm_planner_with_manifest` is `NOT RUN`; no fixture result is
-   substituted for it.
+1. The default run is an Offline manifest-driven Agent simulation unless a real Provider is configured.
+   It proves the protocol and harness execute; it does not establish LLM planning quality.
+2. The real OpenAI-compatible Agent/Report Provider interfaces and strict schemas are implemented but
+   have not been exercised with credentials in this development run.
+3. No participant EEG is available. Raw EEG tests use deterministic synthetic signals or local fixture
+   formats and do not support scientific or clinical claims.
+4. The mounted senior MLP is a restricted research placeholder. Its target, split, scaler reconstruction
+   and feature semantics do not support ASD diagnosis or performance claims.
+5. Senior live Neo4j is unavailable in the current environment. RAG uses the same exported AbilityKG
+   nodes/relationships plus paper BM25 and reports that fallback mode explicitly.
+6. Several full-domain capabilities are declared but disabled Stubs: EEG pattern/profile analysis,
+   ability/severity estimation, comparison, structured assessment, report parsing, visualization and
+   training. Registry will not execute them until real implementations replace the Stubs.
+7. Rule-based intent parsing remains a goal hint and offline-fixture aid. In real Agent mode, semantic
+   planning belongs to the LLM, but no open-ended Provider evaluation has yet been run.
+8. SQLite Memory is local case/episodic memory. It has no cross-case preference learning, vector recall,
+   multi-user isolation or production encryption layer.
+9. Deny-by-default Context projection prevents known raw/path/secret fields, but production deployment
+   would still require stronger data governance, authentication, audit retention and adversarial tests.
+10. The system is research software, not a clinical device. It must not diagnose ASD, exclude diagnosis,
+    prescribe interventions or replace qualified human assessment.

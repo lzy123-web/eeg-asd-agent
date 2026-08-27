@@ -45,3 +45,23 @@ GPU。由于 scaler 未保存，`dynamic_features.csv` 只能提供代理 scaler
 
 查询由实际执行结果动态构造；师兄导出 CSV 通过只读 BM25 检索，模式固定为
 `offline_bm25_local_export`。每条结果必须携带 Evidence ID、来源、摘要、相关度、metadata 和限制。
+
+## D011 — LLM 拥有流程控制权
+
+默认 Runtime 改为 `AgentTurnDecision` 驱动的 Plan–Act–Observe–Replan。Registry 只返回满足硬前置条件
+的候选集合，不根据输入类型生成唯一动作，不替 LLM 排序，也不因已有资产自动跳过。
+
+## D012 — 确定性 Planner 是测试基线，不是隐藏回退
+
+非法 LLM Plan/Action 在新 Agent Runtime 中会被拒绝并写入 Trace；不会切换到固定 Pipeline。
+OfflineProvider 可以模拟同一协议，但必须标记为 fixture，不能用于支持 LLM 规划效果主张。
+
+## D013 — 完整领域能力先用禁用 Stub 冻结边界
+
+EEG 模式分析、Profile、能力维度、结果比较等尚未实现能力以 `enabled=false`、`real_or_fake=stub`
+注册。LLM 能理解未来能力面，但 Registry 永不执行 Stub；后续直接替换 Tool 实现，不新增架构层。
+
+## D014 — Memory 本地持久化、对 LLM 最小投影
+
+完整 Case State 与 Turn 保存到 SQLite；LLM 只看到安全摘要。恢复运行使用单调递增 Turn index，旧记录
+不覆盖；累计 step_count 用于审计，每个新用户请求获得独立预算。

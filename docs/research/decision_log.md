@@ -75,3 +75,39 @@ failure without padding the dataset. No Provider credentials are available.
 
 Consequence: the LLM variant is `NOT RUN` with zero calls and no fixture replacement. The result is
 implementation evidence, not a paper-ready LLM superiority result.
+
+## 2026-08-06 — LLM owns planning and order; Harness owns only execution safety
+
+Decision: make `AgentTurnDecision` the default controller protocol. Each turn revises a mutable
+high-level plan and selects at most one legal Tool. Registry preconditions define executability, not
+relevance or order.
+
+Reason: an EEG-ASD full-domain Agent must handle different user goals over the same assets. Automatic
+skip logic based on input type reproduces a Workflow even if the loop is incremental.
+
+Consequence: existing features, model results and reports are optional evidence. A Provider can reuse,
+inspect, compare, recompute or ignore them. RAG can be selected before, during or after signal/model
+analysis. Invalid Provider actions block and trace; they do not trigger a hidden deterministic Pipeline.
+
+## 2026-08-06 — Freeze the domain surface with disabled Capability Stubs
+
+Decision: register planned full-domain capabilities as `enabled=false`, `real_or_fake=stub` Manifests
+alongside executable Tools.
+
+Reason: the Agent needs a stable domain boundary before every assessment function is implemented, but
+an architectural placeholder must never be callable or represented as a result.
+
+Consequence: Profile, ability, comparison, structured assessment, visualization and training Tools can
+be implemented one by one without adding Planner/Executor layers. Registry excludes all disabled Stubs
+from legal actions.
+
+## 2026-08-06 — Persist full state locally and expose only a Memory projection
+
+Decision: use SQLite for case and turn memory, with monotonically increasing turn indexes across
+resumed runs. Keep cumulative steps for audit and allocate a new step budget to each request.
+
+Reason: resume must preserve history without overwriting it, while full EEG-ASD state is too sensitive
+and too large to inject into an LLM prompt.
+
+Consequence: only `snapshot_for_llm()` enters Agent Context; raw EEG, feature values, paths and internal
+ToolResult objects remain local.

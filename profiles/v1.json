@@ -1,10 +1,20 @@
 {
   "name": "eeg_asd_v1",
   "planner": {
-    "online": "llm_incremental_next_action",
-    "offline_fallback": "deterministic_incremental_state_driven",
-    "max_steps": 16,
+    "default_runtime": "llm_agentic_plan_act_observe_replan",
+    "online_provider": "openai_compatible_agent_turn",
+    "offline_mode": "offline_manifest_driven_agent_simulation",
+    "deterministic_mode": "separate_test_baseline_not_runtime_fallback",
+    "max_steps_per_request": 24,
     "stuck_limit": 2
+  },
+  "agent": {
+    "decision_schema": "AgentTurnDecision@1.0",
+    "actions_per_turn": 1,
+    "existing_assets_are_optional": true,
+    "harness_selects_tool_order": false,
+    "invalid_decision_fallback": "block_and_trace",
+    "memory": "local_sqlite_case_and_turn_memory"
   },
   "eeg": {
     "version": "eeg-v1.0",

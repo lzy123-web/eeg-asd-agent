@@ -336,11 +336,18 @@ class StateReducer:
         if update.data_quality is not None:
             state.data_quality = update.data_quality
         if update.existing_model_result is not None:
+            if state.existing_model_result is not None:
+                state.model_result_history.append(state.existing_model_result)
             state.existing_model_result = update.existing_model_result
+        state.model_result_history.extend(update.model_result_history_add)
         if update.rag_query is not None:
             state.rag_query = update.rag_query
         if update.report_spec is not None:
             state.report_spec = update.report_spec
+        if update.agent_plan is not None:
+            state.agent_plan = update.agent_plan
+        if update.latest_assistant_message is not None:
+            state.latest_assistant_message = update.latest_assistant_message
         state.warnings = StateReducer._merge(state.warnings, update.warnings_add)
         state.limitations = StateReducer._merge(state.limitations, update.limitations_add)
         state.current_action = update.current_action

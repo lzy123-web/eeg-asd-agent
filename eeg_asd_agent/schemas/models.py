@@ -42,6 +42,8 @@ class CaseStatus(str, Enum):
     COMPLETED = "completed"
     BLOCKED = "blocked"
     FAILED = "failed"
+    WAITING = "waiting"
+    CANCELLED = "cancelled"
 
 
 class ModelReadiness(str, Enum):
@@ -70,10 +72,40 @@ class ImplementationKind(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class AgentPlanItemStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+
+
+class AgentPlanItem(StrictModel):
+    step_id: str
+    objective: str
+    status: AgentPlanItemStatus = AgentPlanItemStatus.PENDING
+    candidate_tools: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class AgentPlan(StrictModel):
+    """A mutable high-level plan owned by the Agent, not an executable DAG."""
+
+    revision: int = Field(default=1, ge=1)
+    objective: str
+    strategy: str
+    steps: list[AgentPlanItem] = Field(default_factory=list)
+    completion_criteria: list[str] = Field(default_factory=list)
+
+
 class ToolCapabilityManifest(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     version: str = "1.0"
     category: str
+    description: str = ""
+    use_when: list[str] = Field(default_factory=list)
+    avoid_when: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     required_inputs: list[str] = Field(default_factory=list)
     optional_inputs: list[str] = Field(default_factory=list)
     required_state_fields: list[str] = Field(default_factory=list)
@@ -90,6 +122,9 @@ class ToolCapabilityManifest(StrictModel):
     retry_limit: int = Field(default=1, ge=0, le=3)
     timeout_seconds: float = Field(default=30, gt=0, le=600)
     fallback_tool: str | None = None
+    enabled: bool = True
+    repeatable: bool = False
+    idempotent: bool = True
     implementation_reference: str = Field(
         validation_alias=AliasChoices("implementation_reference", "implementation_ref")
     )
@@ -152,6 +187,32 @@ class ActionDecision(StrictModel):
     based_on_observations: list[str] = Field(default_factory=list)
 
 
+class AgentTurnDecision(StrictModel):
+    """One RAC/ReAct turn: revise the plan, then perform at most one action."""
+
+    plan: AgentPlan
+    action: ActionDecision
+    goal_satisfied: bool = False
+    assistant_message: str | None = None
+    replan_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_turn(self) -> AgentTurnDecision:
+        if self.action.tool_name is None:
+            if not self.action.terminal:
+                raise ValueError("a turn without a tool must be terminal")
+            if not self.goal_satisfied:
+                raise ValueError("a terminal turn without a tool must satisfy the goal")
+        else:
+            if self.action.terminal:
+                raise ValueError(
+                    "a tool action cannot be terminal; observe its result before stopping"
+                )
+            if self.goal_satisfied:
+                raise ValueError("goal_satisfied cannot accompany another tool call")
+        return self
+
+
 class StateUpdate(StrictModel):
     """The only supported channel for a tool to change case state."""
 
@@ -163,8 +224,11 @@ class StateUpdate(StrictModel):
     model_readiness: ModelReadiness | None = None
     data_quality: str | None = None
     existing_model_result: dict[str, Any] | None = None
+    model_result_history_add: list[dict[str, Any]] = Field(default_factory=list)
     rag_query: str | None = None
     report_spec: FinalAssessmentReportSpec | None = None
+    agent_plan: AgentPlan | None = None
+    latest_assistant_message: str | None = None
     warnings_add: list[str] = Field(default_factory=list)
     limitations_add: list[str] = Field(default_factory=list)
     current_action: str | None = None
@@ -223,6 +287,7 @@ class AssessmentCaseState(StrictModel):
     raw_files: list[str] = Field(default_factory=list)
     feature_table: dict[str, float | int | str | None] = Field(default_factory=dict)
     existing_model_result: dict[str, Any] | None = None
+    model_result_history: list[dict[str, Any]] = Field(default_factory=list)
     existing_report: str | None = None
     rag_query: str | None = None
     modalities: list[str] = Field(default_factory=list)
@@ -242,6 +307,8 @@ class AssessmentCaseState(StrictModel):
         validation_alias=AliasChoices("execution_status", "status"),
     )
     report_spec: FinalAssessmentReportSpec | None = None
+    agent_plan: AgentPlan | None = None
+    latest_assistant_message: str | None = None
     action_history: list[ActionDecision] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)

@@ -24,6 +24,8 @@ class EEGRecording:
     unit_assumption: str
     auxiliary_channel_names: tuple[str, ...] = ()
     reference_channel_names: tuple[str, ...] = ()
+    event_labels: tuple[str, ...] = ()
+    event_source: str = "none"
 
     @property
     def duration_seconds(self) -> float:
@@ -69,6 +71,8 @@ class EEGSignalAdapter:
             "sampling_rate_hz": round(recording.sfreq_hz, 6),
             "duration_seconds": round(recording.duration_seconds, 6),
             "event_count": int(len(recording.events)),
+            "event_source": recording.event_source,
+            "event_labels": sorted(set(recording.event_labels)),
             "unit_assumption": recording.unit_assumption,
             "channel_names": recording.channel_names,
             "auxiliary_channel_names": list(recording.auxiliary_channel_names),
@@ -202,6 +206,8 @@ class EEGSignalAdapter:
             "event_count": int(len(events)),
             "event_mode": mode,
             "event_codes": sorted({int(item[1]) for item in events}),
+            "event_source": recording.event_source if mode == "recorded" else mode,
+            "event_labels": sorted(set(recording.event_labels)) if mode == "recorded" else [],
             "pipeline_version": self.config.version,
             "synthetic": recording.synthetic,
         }
@@ -536,6 +542,8 @@ class EEGSignalAdapter:
             unit_assumption=recording.unit_assumption,
             auxiliary_channel_names=recording.auxiliary_channel_names,
             reference_channel_names=recording.reference_channel_names,
+            event_labels=recording.event_labels,
+            event_source=recording.event_source,
         )
 
     def extract_events(self, recording: EEGRecording) -> tuple[np.ndarray, str]:
@@ -587,6 +595,7 @@ class EEGSignalAdapter:
             source_format="synthetic_npz_equivalent",
             synthetic=True,
             unit_assumption="generated_volts",
+            event_source="synthetic",
         )
 
     def _load_npz(self, path: Path) -> EEGRecording:
@@ -620,6 +629,7 @@ class EEGSignalAdapter:
             source_format="npz",
             synthetic=synthetic,
             unit_assumption=f"declared_{unit}",
+            event_source="npz" if events.size else "none",
         )
 
     def _load_mat(self, path: Path, state: AssessmentCaseState) -> EEGRecording:
@@ -649,6 +659,7 @@ class EEGSignalAdapter:
             source_format="mat",
             synthetic=False,
             unit_assumption="magnitude_inferred_microvolts" if scale == 1e-6 else "magnitude_inferred_volts",
+            event_source="none",
         )
 
     def _load_edf(self, path: Path) -> EEGRecording:
@@ -688,11 +699,28 @@ class EEGSignalAdapter:
             if len(unique_rates) != 1:
                 raise ValueError("EDF channels with mixed sampling rates are not supported in V1")
             buffers = [np.empty(record_count * samples[index], dtype=float) for index in data_indices]
+            annotation_indices = {
+                index
+                for index, label in enumerate(parsed["labels"])
+                if self._normalize_channel_name(label).upper() == "EDFANNOTATIONS"
+            }
+            status_indices = {
+                index
+                for index, label in enumerate(parsed["labels"])
+                if self._normalize_channel_name(label).upper() == "STATUS"
+            }
+            annotation_bytes: list[bytes] = []
+            status_values: list[np.ndarray] = []
             handle.seek(header_bytes)
             output_lookup = {source: target for target, source in enumerate(data_indices)}
             for record in range(record_count):
                 for source_index, count in enumerate(samples):
-                    values = np.frombuffer(handle.read(count * 2), dtype="<i2")
+                    raw_bytes = handle.read(count * 2)
+                    if source_index in annotation_indices:
+                        annotation_bytes.append(raw_bytes)
+                    if source_index in status_indices:
+                        status_values.append(np.frombuffer(raw_bytes, dtype="<i2").copy())
+                    values = np.frombuffer(raw_bytes, dtype="<i2")
                     if source_index not in output_lookup:
                         continue
                     target = output_lookup[source_index]
@@ -706,14 +734,21 @@ class EEGSignalAdapter:
         dimensions = [parsed["dimensions"][index].lower() for index in data_indices]
         factors = [1e-6 if unit in {"uv", "µv"} else 1.0 for unit in dimensions]
         data = np.stack([buffer * factor for buffer, factor in zip(buffers, factors, strict=True)])
+        sampling_rate = float(unique_rates.pop())
+        events, event_labels, event_source = self._edf_events(
+            b"".join(annotation_bytes),
+            status_values,
+            sampling_rate,
+            data.shape[1],
+        )
         return EEGRecording(
             data_v=data,
-            sfreq_hz=float(unique_rates.pop()),
+            sfreq_hz=sampling_rate,
             channel_names=[
                 self._normalize_channel_name(parsed["labels"][index])
                 for index in data_indices
             ],
-            events=np.empty((0, 2), dtype=np.int64),
+            events=events,
             source_format="edf",
             synthetic=False,
             unit_assumption="edf_physical_dimension",
@@ -725,7 +760,80 @@ class EEGSignalAdapter:
             reference_channel_names=tuple(
                 parsed["labels"][index] for index in reference_indices
             ),
+            event_labels=event_labels,
+            event_source=event_source,
         )
+
+    @classmethod
+    def _edf_events(
+        cls,
+        annotation_bytes: bytes,
+        status_values: list[np.ndarray],
+        sampling_rate: float,
+        sample_count: int,
+    ) -> tuple[np.ndarray, tuple[str, ...], str]:
+        """Extract EDF+ TAL annotations, with a status-channel fallback."""
+        annotated: list[tuple[int, str]] = []
+        for raw_tal in annotation_bytes.split(b"\x00"):
+            if not raw_tal or b"\x14" not in raw_tal:
+                continue
+            timing, *descriptions = raw_tal.decode("latin-1", errors="ignore").split("\x14")
+            onset_text = timing.split("\x15", 1)[0].strip()
+            try:
+                onset_seconds = float(onset_text)
+            except ValueError:
+                continue
+            onset = int(round(onset_seconds * sampling_rate))
+            if onset < 0 or onset >= sample_count:
+                continue
+            for description in descriptions:
+                label = description.strip()
+                if label:
+                    annotated.append((onset, label))
+        if annotated:
+            label_codes: dict[str, int] = {}
+            used_codes: set[int] = set()
+            next_code = 1000
+            rows: list[tuple[int, int]] = []
+            labels: list[str] = []
+            for onset, label in annotated:
+                if label not in label_codes:
+                    try:
+                        candidate = int(label)
+                    except ValueError:
+                        while next_code in used_codes:
+                            next_code += 1
+                        candidate = next_code
+                        next_code += 1
+                    if candidate in used_codes:
+                        while next_code in used_codes:
+                            next_code += 1
+                        candidate = next_code
+                        next_code += 1
+                    label_codes[label] = candidate
+                    used_codes.add(candidate)
+                rows.append((onset, label_codes[label]))
+                labels.append(label)
+            return np.asarray(rows, dtype=np.int64), tuple(labels), "edf_annotations"
+
+        if status_values:
+            status = np.concatenate(status_values).astype(np.int64)
+            if status.size:
+                values, counts = np.unique(status, return_counts=True)
+                baseline = int(values[int(np.argmax(counts))])
+                transitions = np.flatnonzero(
+                    (status != baseline)
+                    & np.concatenate(([True], status[1:] != status[:-1]))
+                )
+                rows = [
+                    (int(index), int(status[index]) & 0xFFFF)
+                    for index in transitions
+                    if int(index) < sample_count and (int(status[index]) & 0xFFFF) != 0
+                ]
+                if rows:
+                    labels = tuple(str(code) for _onset, code in rows)
+                    return np.asarray(rows, dtype=np.int64), labels, "status_channel"
+        return np.empty((0, 2), dtype=np.int64), (), "none"
 
     @staticmethod
     def _normalize_channel_name(name: str) -> str:

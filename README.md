@@ -180,7 +180,9 @@ D:\Profession\anaconda3\python.exe -m eeg_asd_agent.web
 ```
 
 看到 `DeepSeek API Key:` 后粘贴 Key（终端不会回显），随后访问 `http://127.0.0.1:8765`。页面支持
-EDF、NPZ、MAT 上传，可展示 Agent 已完成的工具步骤、运行状态和最终 HTML/Markdown 报告。
+EDF、NPZ、MAT 上传，可展示 Agent 已完成的工具步骤、运行状态和最终 HTML/Markdown 报告。每次运行会在
+`logs/<时间>_<run_id>/` 下保存 `trace.jsonl`、可视化 `trace.html`、逐工具结果、Agent 上下文、报告和
+运行摘要；页面完成或失败后均可查看 Trace 并下载完整日志 ZIP。日志目录可在服务重启后继续按 run ID 访问。
 
 知识检索会优先使用配置好的 ASD 专用知识导出；若这些资产不存在，则直接复用所给 EEGAgent 工程的
 `RAG/chunks.pkl`。原工程的 FAISS 索引依赖未附带完整权重的 BGE-M3 模型，因此当前在相同知识块上使用

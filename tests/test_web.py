@@ -5,6 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from eeg_asd_agent.providers import OpenAIResponsesProvider
+from eeg_asd_agent import web
 from eeg_asd_agent.web import app
 
 
@@ -43,6 +44,42 @@ def test_web_home_and_health_do_not_expose_api_key(monkeypatch) -> None:
     assert health.status_code == 200
     assert health.json()["llm"]["configured"] is True
     assert "never-return-this-secret" not in json.dumps(health.json())
+    assert "下载完整日志包" in home.text
+
+
+def test_web_serves_trace_bundle_after_process_state_is_lost(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(web, "LOG_ROOT", tmp_path / "logs")
+    monkeypatch.setattr(web, "RUN_ROOT", tmp_path / "web-runs")
+    output = web.LOG_ROOT / "20261012-120000_test-run"
+    output.mkdir(parents=True)
+    (output / "trace.html").write_text("<h1>trace</h1>", encoding="utf-8")
+    (output / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "run_id": "test-run",
+                "file_name": "sample.edf",
+                "status": "completed",
+                "error": None,
+                "log_directory": output.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = web.RUN_ROOT / "test-run" / "trace-bundle.zip"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_bytes(b"PK-test")
+    web._jobs.pop("test-run", None)
+    try:
+        client = TestClient(app)
+        assert client.get("/api/runs/test-run").json()["log_directory"] == output.name
+        assert client.get("/api/runs/test-run/trace.html").status_code == 200
+        response = client.get("/api/runs/test-run/logs.zip")
+        assert response.status_code == 200
+        assert response.content == b"PK-test"
+    finally:
+        web._jobs.pop("test-run", None)
 
 
 def test_web_rejects_runs_when_llm_key_is_missing(monkeypatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from typing import Any, Protocol
 
 from eeg_asd_agent.adapters import (
@@ -15,6 +16,7 @@ from eeg_asd_agent.reporting import MarkdownRenderer, StructuredReportGenerator
 from eeg_asd_agent.schemas import (
     AssessmentCaseState,
     CaseStatus,
+    FinalAssessmentReportSpec,
     ImplementationKind,
     ModelReadiness,
     RequestedGoal,
@@ -47,6 +49,163 @@ ALL_CORE_GOALS = [
     RequestedGoal.REPORT_ONLY,
     RequestedGoal.UNSUPPORTED,
 ]
+
+
+def _full_assessment_coverage_gaps(
+    report: FinalAssessmentReportSpec,
+    state: AssessmentCaseState,
+) -> list[str]:
+    """Reject a structurally valid report that drops available core evidence."""
+    if state.requested_goal is not RequestedGoal.FULL_ASSESSMENT:
+        return []
+    raw = report.model_dump(mode="json")
+    details = raw.get("data_summary", {}).get("details", {})
+    eeg_description = details.get("eeg_description", {}) if isinstance(details, dict) else {}
+    profile_observed = any(
+        item.tool_name == "build_eeg_asd_profile" and item.status is ToolStatus.SUCCESS
+        for item in state.observations
+    )
+    gaps: list[str] = []
+    if profile_observed:
+        for section in ("spectral_analysis", "regional_analysis", "laterality", "connectivity"):
+            value = eeg_description.get(section, {}) if isinstance(eeg_description, dict) else {}
+            if not isinstance(value, dict) or value.get("status") in {None, "unavailable"}:
+                gaps.append(section)
+    model_assessment = raw.get("model_assessment", {})
+    if profile_observed and (
+        not isinstance(model_assessment, dict)
+        or model_assessment.get("status") in {None, "unavailable"}
+    ):
+        gaps.append("asd_research_profile")
+    knowledge_observed = any(
+        item.tool_name == "retrieve_asd_knowledge"
+        and item.status is ToolStatus.SUCCESS
+        and bool(item.facts.get("items"))
+        for item in state.observations
+    )
+    evidence_ids = raw.get("knowledge_interpretation", {}).get("evidence_ids", [])
+    if knowledge_observed and not evidence_ids:
+        gaps.append("knowledge_evidence")
+    return gaps
+
+
+def _ground_report_with_observations(
+    report: FinalAssessmentReportSpec,
+    state: AssessmentCaseState,
+) -> FinalAssessmentReportSpec:
+    """Deterministically retain allowlisted summaries that the LLM omitted."""
+    if state.requested_goal is not RequestedGoal.FULL_ASSESSMENT:
+        return report
+    profile = next(
+        (
+            item.facts
+            for item in reversed(state.observations)
+            if item.tool_name == "build_eeg_asd_profile"
+            and item.status is ToolStatus.SUCCESS
+        ),
+        None,
+    )
+    data_summary = report.data_summary
+    model_assessment = report.model_assessment
+    if profile:
+        details = deepcopy(data_summary.details)
+        eeg_description = details.get("eeg_description", {})
+        if not isinstance(eeg_description, dict):
+            eeg_description = {}
+        spectral = deepcopy(profile.get("spectral_summary", {}))
+        eeg_description.update(
+            {
+                "status": "available",
+                "spectral_analysis": {
+                    "status": "available",
+                    "summary": "已计算全局频带功率、脑区频带功率与窗口稳定性。",
+                    "values": spectral,
+                },
+                "regional_analysis": {
+                    "status": "available",
+                    "summary": "已按标准头皮脑区汇总描述性相对频带功率。",
+                    "values": (
+                        spectral.get("regional_relative_band_power", {})
+                        if isinstance(spectral, dict)
+                        else {}
+                    ),
+                },
+                "laterality": {
+                    "status": "available",
+                    "summary": "已计算左右同源通道的描述性对数功率差异。",
+                    "values": deepcopy(profile.get("asymmetry_summary", {})),
+                },
+                "connectivity": {
+                    "status": "available",
+                    "summary": "已计算描述性通道相关性与频带相干性摘要。",
+                    "values": deepcopy(profile.get("connectivity_summary", {})),
+                },
+            }
+        )
+        details["eeg_description"] = eeg_description
+        details.setdefault("technical_description", deepcopy(profile.get("recording_summary", {})))
+        details["research_highlights"] = deepcopy(profile.get("research_highlights", []))
+        data_summary = data_summary.model_copy(
+            update={
+                "status": "available",
+                "summary": (
+                    data_summary.summary
+                    + " 已保留本地工具生成的频谱、脑区、左右差异和连接性摘要。"
+                ),
+                "source_tools": list(
+                    dict.fromkeys([*data_summary.source_tools, "build_eeg_asd_profile"])
+                ),
+                "details": details,
+            }
+        )
+        if model_assessment.status == "unavailable":
+            model_assessment = model_assessment.model_copy(
+                update={
+                    "status": "available",
+                    "summary": (
+                        "已生成非诊断性的 EEG-ASD 研究性描述档案；该档案不是分类器，"
+                        "不能估计诊断、严重程度或能力。"
+                    ),
+                    "source_tools": list(
+                        dict.fromkeys(
+                            [*model_assessment.source_tools, "build_eeg_asd_profile"]
+                        )
+                    ),
+                    "details": {
+                        **model_assessment.details,
+                        "profile_status": profile.get("profile_status"),
+                        "interpretation_scope": profile.get("interpretation_scope"),
+                        "research_highlights": profile.get("research_highlights", []),
+                    },
+                }
+            )
+    knowledge = report.knowledge_interpretation
+    retrieved_ids = [
+        str(item.get("evidence_id"))
+        for observation in state.observations
+        if observation.tool_name == "retrieve_asd_knowledge"
+        and observation.status is ToolStatus.SUCCESS
+        for item in observation.facts.get("items", [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    ]
+    if retrieved_ids and not knowledge.evidence_ids:
+        knowledge = knowledge.model_copy(
+            update={
+                "status": "available",
+                "summary": (
+                    knowledge.summary
+                    + " 已附加检索工具实际返回的 Evidence ID，供人工回溯。"
+                ),
+                "evidence_ids": retrieved_ids,
+            }
+        )
+    return report.model_copy(
+        update={
+            "data_summary": data_summary,
+            "model_assessment": model_assessment,
+            "knowledge_interpretation": knowledge,
+        }
+    )
 
 
 def _manifest(
@@ -224,6 +383,8 @@ def build_core_registry(
             "sampling_rate_hz",
             "duration_seconds",
             "event_count",
+            "event_source",
+            "event_labels",
             "unit_assumption",
             "channel_names",
             "auxiliary_channel_names",
@@ -239,6 +400,8 @@ def build_core_registry(
             "sampling_rate_hz",
             "duration_seconds",
             "event_count",
+            "event_source",
+            "event_labels",
             "unit_assumption",
             "channel_names",
             "auxiliary_channel_names",
@@ -399,6 +562,8 @@ def build_core_registry(
             "event_count",
             "event_mode",
             "event_codes",
+            "event_source",
+            "event_labels",
             "pipeline_version",
             "synthetic",
         ],
@@ -406,6 +571,8 @@ def build_core_registry(
             "event_count",
             "event_mode",
             "event_codes",
+            "event_source",
+            "event_labels",
             "pipeline_version",
             "synthetic",
         ],
@@ -1074,6 +1241,19 @@ def build_core_registry(
             registry, AllowlistProjector(registry)
         ).report_context(state, state.requested_goal)
         report, _raw_output, repaired = StructuredReportGenerator(provider).generate(context)
+        report = _ground_report_with_observations(report, state)
+        coverage_gaps = _full_assessment_coverage_gaps(report, state)
+        if coverage_gaps:
+            return _outcome(
+                report_manifest,
+                ToolStatus.FAILURE,
+                data={"schema_valid": True, "coverage_gaps": coverage_gaps},
+                errors=[
+                    "report omitted available required evidence: "
+                    + ", ".join(coverage_gaps)
+                ],
+                update=StateUpdate(pending_requirements_add=coverage_gaps),
+            )
         return _outcome(
             report_manifest,
             ToolStatus.SUCCESS,
@@ -1112,6 +1292,17 @@ def build_core_registry(
                 render_manifest,
                 ToolStatus.BLOCKED,
                 errors=["validated report_spec is required"],
+            )
+        coverage_gaps = _full_assessment_coverage_gaps(state.report_spec, state)
+        if coverage_gaps:
+            return _outcome(
+                render_manifest,
+                ToolStatus.BLOCKED,
+                errors=[
+                    "full-assessment completion criteria are unmet: "
+                    + ", ".join(coverage_gaps)
+                ],
+                update=StateUpdate(pending_requirements_add=coverage_gaps),
             )
         return _outcome(
             render_manifest,

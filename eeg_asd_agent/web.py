@@ -4,7 +4,9 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -14,18 +16,44 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 from eeg_asd_agent.providers import OpenAIResponsesProvider, ProviderConfigurationError
-from eeg_asd_agent.schemas import AssessmentCaseState, InputKind
+from eeg_asd_agent.schemas import AssessmentCaseState, CaseStatus, InputKind, RequestedGoal
 from eeg_asd_agent.workflow import run_workflow
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "web"
 RUN_ROOT = PROJECT_ROOT / "artifacts" / "web-runs"
+LOG_ROOT = PROJECT_ROOT / "logs"
 ALLOWED_SUFFIXES = {".edf", ".npz", ".mat"}
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 
 app = FastAPI(title="EEG-ASD LLM Agent", docs_url=None, redoc_url=None)
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+
+
+def _job_for(run_id: str) -> dict[str, Any]:
+    with _jobs_lock:
+        live = dict(_jobs.get(run_id, {}))
+    if live:
+        return live
+    matches = sorted(LOG_ROOT.glob(f"*_{run_id}"), reverse=True)
+    if not matches:
+        return {}
+    output_dir = matches[0]
+    summary_path = output_dir / "run_summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        summary = {}
+    return {
+        "run_id": run_id,
+        "status": summary.get("status", "completed"),
+        "file_name": summary.get("file_name", "unknown"),
+        "error": summary.get("error"),
+        "output_dir": str(output_dir),
+        "log_dir_name": output_dir.name,
+        "bundle_path": str(RUN_ROOT / run_id / "trace-bundle.zip"),
+    }
 
 
 def _provider_summary() -> dict[str, object]:
@@ -69,6 +97,7 @@ async def create_run(
 
     run_id = uuid4().hex
     run_dir = RUN_ROOT / run_id
+    log_dir = LOG_ROOT / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{run_id}"
     upload_dir = run_dir / "input"
     upload_dir.mkdir(parents=True, exist_ok=False)
     eeg_path = upload_dir / original_name
@@ -89,7 +118,9 @@ async def create_run(
             "status": "queued",
             "file_name": original_name,
             "error": None,
-            "output_dir": str(run_dir / "output"),
+            "output_dir": str(log_dir),
+            "log_dir_name": log_dir.name,
+            "bundle_path": str(run_dir / "trace-bundle.zip"),
         }
     worker = threading.Thread(
         target=_run_agent,
@@ -108,7 +139,10 @@ def _run_agent(
     sex: str | None,
     request: str,
 ) -> None:
-    output_dir = RUN_ROOT / run_id / "output"
+    with _jobs_lock:
+        job = dict(_jobs[run_id])
+    output_dir = Path(str(job["output_dir"]))
+    bundle_path = Path(str(job["bundle_path"]))
     with _jobs_lock:
         _jobs[run_id]["status"] = "running"
     metadata: dict[str, object] = {}
@@ -132,10 +166,18 @@ def _run_agent(
             planner_kind="agent",
             provider=provider,
         )
+        report_ready = (output_dir / "report.html").is_file()
+        completed = state.execution_status is CaseStatus.COMPLETED and (
+            state.requested_goal is not RequestedGoal.FULL_ASSESSMENT or report_ready
+        )
         with _jobs_lock:
             _jobs[run_id].update(
                 {
-                    "status": "completed",
+                    "status": "completed" if completed else "failed",
+                    "error": None
+                    if completed
+                    else "; ".join(state.warnings[-3:])
+                    or "Agent 未满足完整评估的完成条件",
                     "artifacts": {key: str(value) for key, value in artifacts.items()},
                 }
             )
@@ -147,12 +189,30 @@ def _run_agent(
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
+    finally:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with _jobs_lock:
+            summary = {
+                "run_id": run_id,
+                "file_name": _jobs[run_id]["file_name"],
+                "status": _jobs[run_id]["status"],
+                "error": _jobs[run_id].get("error"),
+                "log_directory": _jobs[run_id]["log_dir_name"],
+            }
+        (output_dir / "run_summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.make_archive(
+            str(bundle_path.with_suffix("")),
+            "zip",
+            root_dir=output_dir,
+        )
 
 
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str) -> dict[str, object]:
-    with _jobs_lock:
-        job = dict(_jobs.get(run_id, {}))
+    job = _job_for(run_id)
     if not job:
         raise HTTPException(status_code=404, detail="运行记录不存在")
     output_dir = Path(str(job["output_dir"]))
@@ -184,12 +244,15 @@ def get_run(run_id: str) -> dict[str, object]:
         "report_ready": (output_dir / "report.html").is_file(),
         "report_html_url": f"/api/runs/{run_id}/report.html",
         "report_markdown_url": f"/api/runs/{run_id}/report.md",
+        "trace_ready": (output_dir / "trace.html").is_file(),
+        "trace_html_url": f"/api/runs/{run_id}/trace.html",
+        "log_bundle_url": f"/api/runs/{run_id}/logs.zip",
+        "log_directory": job.get("log_dir_name"),
     }
 
 
 def _report_path(run_id: str, name: str) -> Path:
-    with _jobs_lock:
-        job = dict(_jobs.get(run_id, {}))
+    job = _job_for(run_id)
     if not job:
         raise HTTPException(status_code=404, detail="运行记录不存在")
     path = Path(str(job["output_dir"])) / name
@@ -208,6 +271,30 @@ def report_markdown(run_id: str) -> PlainTextResponse:
     return PlainTextResponse(
         _report_path(run_id, "report.md").read_text(encoding="utf-8"),
         media_type="text/markdown; charset=utf-8",
+    )
+
+
+@app.get("/api/runs/{run_id}/trace.html", response_class=HTMLResponse)
+def trace_html(run_id: str) -> HTMLResponse:
+    return HTMLResponse(_report_path(run_id, "trace.html").read_text(encoding="utf-8"))
+
+
+@app.get("/api/runs/{run_id}/logs.zip")
+def logs_bundle(run_id: str) -> FileResponse:
+    job = _job_for(run_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    path = Path(str(job["bundle_path"]))
+    if not path.is_file():
+        output_dir = Path(str(job["output_dir"]))
+        if not output_dir.is_dir():
+            raise HTTPException(status_code=404, detail="日志包尚未生成")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.make_archive(str(path.with_suffix("")), "zip", root_dir=output_dir)
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"eeg-asd-trace-{run_id}.zip",
     )
 
 

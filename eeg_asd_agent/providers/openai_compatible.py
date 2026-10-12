@@ -327,6 +327,8 @@ class OpenAIResponsesProvider:
         return (
             "Return only FinalAssessmentReportSpec. Use only visible_results and capability_context. "
             "Do not diagnose, invent numbers, expose paths, or claim an unexecuted tool succeeded. "
+            "For a full assessment, satisfy every completion_requirements item using the available "
+            "descriptive summaries; data minimization does not make those summaries unavailable. "
             "Every knowledge statement must use exact retrieved Evidence IDs; never invent an ID. "
             "Organize data_summary.details using the EEGAgent report concepts when supported: "
             "patient_information, history, technical_description, eeg_description, impression, "

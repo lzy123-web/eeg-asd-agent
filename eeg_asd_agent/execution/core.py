@@ -184,6 +184,18 @@ class ContextBuilder:
                 for manifest in used_manifests.values()
             ],
             "missing_information": state.pending_requirements,
+            "completion_requirements": (
+                [
+                    "Report the available spectral summary.",
+                    "Report the available regional summary.",
+                    "Report the available left-right asymmetry summary.",
+                    "Report the available connectivity summary.",
+                    "Represent the non-diagnostic EEG-ASD research profile as available.",
+                    "Cite at least one exact Evidence ID when retrieval returned items.",
+                ]
+                if goal is RequestedGoal.FULL_ASSESSMENT
+                else []
+            ),
             "report_spec_schema": FinalAssessmentReportSpec.model_json_schema(),
             "non_diagnostic_rules": [
                 "Do not diagnose or rule out ASD.",

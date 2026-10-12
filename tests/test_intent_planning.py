@@ -17,6 +17,10 @@ from eeg_asd_agent.tools.builtin import build_default_registry
         ("检索 ASD 知识", RequestedGoal.KNOWLEDGE_SEARCH),
         ("给出干预知识", RequestedGoal.INTERVENTION),
         ("完成 ASD 辅助评估", RequestedGoal.FULL_ASSESSMENT),
+        (
+            "分析儿童 EEG 并生成评估报告，请说明信号质量、频谱、脑区、左右差异、连接性与知识证据",
+            RequestedGoal.FULL_ASSESSMENT,
+        ),
         ("直接确诊 ASD", RequestedGoal.UNSUPPORTED),
     ],
 )

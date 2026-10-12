@@ -20,7 +20,14 @@ class RuleBasedIntentParser:
             and any(word in normalized for word in ("检查", "check", "只"))
         ):
             return RequestedGoal.READINESS_CHECK
-        if any(word in normalized for word in ("质量", "quality")):
+        # A full report commonly asks to include signal quality.  Do not let
+        # that requested section collapse the whole goal to a quality-only
+        # run; quality_check is reserved for requests without a broader
+        # assessment/analysis intent.
+        if (
+            any(word in normalized for word in ("质量", "quality"))
+            and not full_requested
+        ):
             return RequestedGoal.QUALITY_CHECK
         if (
             any(word in normalized for word in ("特征", "feature"))

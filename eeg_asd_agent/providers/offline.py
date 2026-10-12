@@ -396,6 +396,12 @@ class OfflineProvider:
                 model_tools.append(tool_name)
             elif tool_name == "build_eeg_asd_profile":
                 data_status = str(visible.get("profile_status", "available"))
+                model_status = "available"
+                model_summary = (
+                    "已生成非诊断性的 EEG-ASD 研究性描述档案；该档案不是分类器，"
+                    "不能用于诊断、排除诊断、严重程度或能力估计。"
+                )
+                model_tools.append(tool_name)
                 quality = str(visible.get("quality_status", "unknown"))
                 recording = visible.get("recording_summary", {})
                 spectral = visible.get("spectral_summary", {})
@@ -420,8 +426,33 @@ class OfflineProvider:
                     },
                     "technical_description": recording,
                     "eeg_description": {
+                        "status": data_status,
                         "background_activity": highlights,
                         "artifacts_and_quality": quality_summary,
+                        "spectral_analysis": {
+                            "status": "available",
+                            "summary": "已计算全局与脑区相对频带功率及窗口稳定性。",
+                            "values": spectral,
+                        },
+                        "regional_analysis": {
+                            "status": "available",
+                            "summary": "已按前额、额、中央、顶、颞和枕区汇总相对频带功率。",
+                            "values": (
+                                dict(spectral).get("regional_relative_band_power", {})
+                                if isinstance(spectral, dict)
+                                else {}
+                            ),
+                        },
+                        "laterality": {
+                            "status": "available",
+                            "summary": "已计算同源左右通道的描述性对数功率差异。",
+                            "values": asymmetry,
+                        },
+                        "connectivity": {
+                            "status": "available",
+                            "summary": "已计算描述性通道相关与指定频带相干性摘要。",
+                            "values": connectivity,
+                        },
                         "abnormal_findings": (
                             "未执行临床异常判读；当前工具仅输出描述性定量特征。"
                         ),

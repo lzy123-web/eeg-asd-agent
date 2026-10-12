@@ -13,7 +13,12 @@ def utc_now() -> datetime:
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", validate_assignment=True, populate_by_name=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        validate_assignment=True,
+        populate_by_name=True,
+        protected_namespaces=(),
+    )
 
 
 class InputKind(str, Enum):
@@ -333,6 +338,7 @@ class ReportAssessment(StrictModel):
     status: str
     summary: str
     source_tools: list[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class KnowledgeInterpretation(StrictModel):
@@ -368,11 +374,12 @@ class StructuredKnowledgeResult(StrictModel):
 
 
 class EEGProcessingConfig(StrictModel):
-    version: str = "eeg-v1.0"
+    version: str = "eeg-v2.0"
     target_sfreq_hz: int = Field(default=128, ge=64, le=1024)
     highpass_hz: float = Field(default=1.0, ge=0.1, lt=10)
     lowpass_hz: float = Field(default=40.0, gt=10, le=100)
     notch_hz: float = Field(default=50.0, gt=0, le=60)
+    reference: str = "average"
     epoch_seconds: float = Field(default=2.0, ge=0.5, le=30)
     max_abs_amplitude_uv: float = Field(default=250.0, gt=0)
     min_duration_seconds: float = Field(default=4.0, gt=0)

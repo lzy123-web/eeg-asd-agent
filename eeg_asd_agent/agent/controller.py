@@ -5,7 +5,7 @@ import re
 from typing import Protocol
 
 from eeg_asd_agent.agent.context import AgentContextBuilder
-from eeg_asd_agent.schemas import AgentTurnDecision, AssessmentCaseState
+from eeg_asd_agent.schemas import AgentTurnDecision, AssessmentCaseState, RequestedGoal
 from eeg_asd_agent.tools.registry import ToolRegistry
 
 
@@ -82,6 +82,17 @@ class LLMAgentController:
 
         action = decision.action
         if action.tool_name is None:
+            if not decision.goal_satisfied:
+                raise AgentDecisionError(
+                    "a no-tool decision must explicitly mark goal_satisfied=true"
+                )
+            if (
+                state.requested_goal is RequestedGoal.FULL_ASSESSMENT
+                and "render_report" not in state.completed_workflows
+            ):
+                raise AgentDecisionError(
+                    "a full assessment cannot finish before render_report succeeds"
+                )
             return
         planned_tools = {
             tool_name
@@ -95,6 +106,14 @@ class LLMAgentController:
         if action.tool_name not in allowed:
             raise AgentDecisionError(
                 f"tool {action.tool_name!r} is outside allowed_next_actions"
+            )
+        if (
+            action.terminal
+            and state.requested_goal is RequestedGoal.FULL_ASSESSMENT
+            and action.tool_name != "render_report"
+        ):
+            raise AgentDecisionError(
+                "only render_report may be terminal for a full assessment"
             )
         manifest = self.registry.describe(action.tool_name)
         allowed_arguments = set(manifest.required_inputs + manifest.optional_inputs)

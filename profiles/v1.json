@@ -17,11 +17,12 @@
     "memory": "local_sqlite_case_and_turn_memory"
   },
   "eeg": {
-    "version": "eeg-v1.0",
+    "version": "eeg-v2.0",
     "target_sfreq_hz": 128,
     "highpass_hz": 1.0,
     "lowpass_hz": 40.0,
     "notch_hz": 50.0,
+    "reference": "average",
     "epoch_seconds": 2.0,
     "max_abs_amplitude_uv": 250.0,
     "min_duration_seconds": 4.0,

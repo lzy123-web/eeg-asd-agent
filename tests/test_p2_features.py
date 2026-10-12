@@ -65,6 +65,52 @@ def test_openai_provider_parses_responses_output(monkeypatch: pytest.MonkeyPatch
     assert body["text"]["format"]["strict"] is True
 
 
+def test_openai_provider_supports_chat_completions(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = OfflineProvider().generate_json(
+        "report",
+        {"case_id": "chat-provider-test", "visible_results": []},
+    )
+    response_body = json.dumps(
+        {
+            "choices": [{"message": {"role": "assistant", "content": report}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10},
+        }
+    ).encode()
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return response_body
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        captured["request"] = request
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    provider = OpenAIResponsesProvider(
+        api_key="test-secret",
+        model="qwen-test",
+        base_url="https://example.invalid/v1",
+        api_style="chat_completions",
+    )
+    output = provider.generate_json(
+        "report",
+        {"case_id": "chat-provider-test", "visible_results": []},
+    )
+    assert json.loads(output)["case_id"] == "chat-provider-test"
+    assert provider.last_usage["total_tokens"] == 10
+    assert captured["request"].full_url.endswith("/chat/completions")
+    body = json.loads(captured["request"].data.decode())
+    assert body["response_format"] == {"type": "json_object"}
+    assert "The JSON response must validate against this schema" in body["messages"][0]["content"]
+
+
 def test_trace_html_and_plan_visualization(tmp_path: Path) -> None:
     trace_path = tmp_path / "trace.jsonl"
     TraceLogger(trace_path, "t").event("started", {"safe": True})

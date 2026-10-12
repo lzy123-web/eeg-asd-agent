@@ -10,8 +10,9 @@
 - 什么时候用户目标已经满足。
 
 用户只提供一份 EEG 也可以启动完整任务。特征表、模型结果、能力评估和既有报告都是可选资产，
-不是运行前提，也不是自动跳过某一步的控制信号。当前 V1 先完成 Agent 系统骨架和闭环；具体领域能力
-按 Manifest 挂载，尚未实现的能力会作为 `enabled=false` 的显式 Stub 出现在能力目录中，而不会伪装成功。
+不是运行前提，也不是自动跳过某一步的控制信号。当前已接通 EEG 读取、质量检查、预处理、
+特征提取、非诊断性 ASD 相关 EEG Profile、知识检索和报告生成；尚未实现的能力仍以
+`enabled=false` 的显式 Stub 出现在能力目录中，不会伪装成功。
 
 本系统仅用于研究与软件验证，不是临床诊断系统，不输出 ASD 确诊、排除诊断或治疗处方。
 
@@ -87,7 +88,7 @@ Observation 会进入下一轮 Context。若 LLM 输出未知工具、非法参�
 | 能力族 | 当前可执行能力 | 已声明但禁用的扩展点 |
 |---|---|---|
 | EEG 数据 | `inspect_eeg`、`check_eeg_quality`、`preprocess_eeg`、`extract_events`、`create_epochs`、`extract_eeg_features` | `analyze_eeg_patterns`、`visualize_eeg_analysis` |
-| 评估与模型 | `check_data_quality`、`check_model_readiness`、`run_asd_baseline_model`、`inspect_existing_model_result`、`research_replay_classifier` | `build_eeg_asd_profile`、`estimate_asd_severity`、`estimate_ability_dimensions`、`compare_assessment_results`、`conduct_structured_assessment`、`train_asd_research_model` |
+| 评估与模型 | `build_eeg_asd_profile`、`check_data_quality`、`check_model_readiness`、`run_asd_baseline_model`、`inspect_existing_model_result`、`research_replay_classifier` | `estimate_asd_severity`、`estimate_ability_dimensions`、`compare_assessment_results`、`conduct_structured_assessment`、`train_asd_research_model` |
 | RAG | `build_asd_rag_query`、`retrieve_asd_knowledge` | 后续可增加干预知识和更多检索器 |
 | 报告 | `generate_report_spec`、`render_report` | `parse_assessment_report` |
 | 控制 | `inspect_case`、`request_human_review`、受限停止工具 | — |
@@ -134,15 +135,22 @@ RAG 是 Agent 可选择的能力，不是固定在模型推理之后的流水线
 ## 运行
 
 ```bash
-cd /Users/nick/programs/eeg-system/eeg-asd-workflow-agent
+cd D:\Profession\Programs\eeg-asd-agent
+
+# 正式入口：使用 DeepSeek Responses API（模型与地址默认读取 config/llm.json）
+$env:OPENAI_API_KEY="<your-key>"
+D:\Profession\anaconda3\python.exe -m eeg_asd_agent.cli assess `
+  --eeg "D:\path\to\recording.edf" `
+  --age 8 --sex male `
+  --output-dir artifacts\assessment-deepseek
 
 # 默认：完整 Agent Runtime + Offline Agent simulation
-.venv/bin/python -m eeg_asd_agent.cli run \
-  --case demo_cases/01_raw_eeg_full_assessment.json \
-  --request "分析这个 EEG，完成 ASD 相关研究评估；需要时检索知识并生成报告" \
-  --offline --output-dir artifacts/agent/raw
+D:\Profession\anaconda3\python.exe -m eeg_asd_agent.cli run `
+  --case demo_cases\01_raw_eeg_full_assessment.json `
+  --request "分析这个 EEG，完成 ASD 相关研究评估；需要时检索知识并生成报告" `
+  --offline --output-dir artifacts\agent\raw
 
-# 同一套 Runtime，使用真实 OpenAI-compatible Provider
+# 同一套 Runtime，使用其他 OpenAI-compatible Provider
 export OPENAI_API_KEY="..."
 export OPENAI_MODEL="<pinned-model-id>"
 export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional
@@ -159,8 +167,24 @@ export OPENAI_TEMPERATURE="0"                       # optional
   --planner deterministic --offline --output-dir artifacts/baseline
 ```
 
-未配置 API Key 时，CLI 会明确降级到 `offline_agentic_simulation`，继续验证完整协议，但不声称完成了
-真实 LLM 运行。
+`assess` 是正式 LLM Agent 入口：未配置模型服务时会直接报错，不会降级成规则或离线模式。
+`run --offline` 仅保留给自动化测试和无网络情况下的 Harness 回归验证，不是正式评估入口。
+
+## 本地网页
+
+DeepSeek 的非敏感参数已保存在 `config/llm.json`。为避免凭据进入 Git、日志或浏览器，网页服务在
+启动时从终端安全读取 API Key，并只在该后端进程内保存：
+
+```powershell
+D:\Profession\anaconda3\python.exe -m eeg_asd_agent.web
+```
+
+看到 `DeepSeek API Key:` 后粘贴 Key（终端不会回显），随后访问 `http://127.0.0.1:8765`。页面支持
+EDF、NPZ、MAT 上传，可展示 Agent 已完成的工具步骤、运行状态和最终 HTML/Markdown 报告。
+
+知识检索会优先使用配置好的 ASD 专用知识导出；若这些资产不存在，则直接复用所给 EEGAgent 工程的
+`RAG/chunks.pkl`。原工程的 FAISS 索引依赖未附带完整权重的 BGE-M3 模型，因此当前在相同知识块上使用
+可审计的 BM25 排序，不伪装成向量检索。可通过 `EEG_AGENT_REFERENCE_ROOT` 修改参考工程位置。
 
 ## Memory 与恢复
 

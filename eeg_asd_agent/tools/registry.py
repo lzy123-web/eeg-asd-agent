@@ -103,7 +103,9 @@ class ToolRegistry:
             "model_checked": state.model_readiness.value != "unknown",
             "model_stage_resolved": model_stage_resolved,
             "baseline_failed": "run_asd_baseline_model" in failed,
-            "data_quality_pass": state.data_quality == "pass",
+            "data_quality_pass": state.data_quality in {"pass", "review"},
+            "features_extracted": "extract_eeg_features" in completed,
+            "asd_profile_ready": "build_eeg_asd_profile" in completed,
             "rag_query_allowed": goal in {"full_assessment", "knowledge_search"}
             and model_stage_resolved,
             "rag_query_present": bool(state.rag_query),

@@ -1,0 +1,8 @@
+{
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-flash",
+  "api_style": "responses",
+  "temperature": 0,
+  "max_output_tokens": 8192
+}

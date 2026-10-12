@@ -22,6 +22,8 @@ class EEGRecording:
     source_format: str
     synthetic: bool
     unit_assumption: str
+    auxiliary_channel_names: tuple[str, ...] = ()
+    reference_channel_names: tuple[str, ...] = ()
 
     @property
     def duration_seconds(self) -> float:
@@ -36,13 +38,21 @@ class EEGSignalAdapter:
     dependency is imported.
     """
 
-    version = "eeg-v1.0"
+    version = "eeg-v2.0"
     bands = {
         "delta": (0.5, 4.0),
         "theta": (4.0, 8.0),
         "alpha": (8.0, 12.0),
         "beta": (12.0, 30.0),
         "gamma": (30.0, 40.0),
+    }
+    regions = {
+        "prefrontal": ("FP1", "FP2"),
+        "frontal": ("F3", "F4", "F7", "F8", "FZ"),
+        "central": ("C3", "C4", "CZ"),
+        "parietal": ("P3", "P4", "PZ"),
+        "temporal": ("T3", "T4", "T5", "T6", "T7", "T8", "P7", "P8"),
+        "occipital": ("O1", "O2"),
     }
 
     def __init__(self, config: EEGProcessingConfig | None = None) -> None:
@@ -60,33 +70,108 @@ class EEGSignalAdapter:
             "duration_seconds": round(recording.duration_seconds, 6),
             "event_count": int(len(recording.events)),
             "unit_assumption": recording.unit_assumption,
+            "channel_names": recording.channel_names,
+            "auxiliary_channel_names": list(recording.auxiliary_channel_names),
+            "reference_channel_names": list(recording.reference_channel_names),
+            "montage_family": "standard_10_20_or_compatible",
         }
 
     def quality(self, state: AssessmentCaseState) -> dict[str, Any]:
         recording = self.load_case(state)
         data = recording.data_v
         finite_ratio = float(np.isfinite(data).sum() / data.size)
-        channel_std_uv = np.nanstd(data, axis=1) * 1e6
-        max_abs_uv = float(np.nanmax(np.abs(data)) * 1e6)
-        flat_channels = int(np.sum(channel_std_uv < 0.1))
+        clean = np.nan_to_num(data - np.nanmean(data, axis=1, keepdims=True))
+        if self.config.reference == "average" and clean.shape[0] > 1:
+            clean = clean - np.mean(clean, axis=0, keepdims=True)
+        channel_std_uv = np.nanstd(clean, axis=1) * 1e6
+        channel_p99_abs_uv = np.nanpercentile(np.abs(clean), 99.0, axis=1) * 1e6
+        channel_artifact_fraction = np.mean(
+            np.abs(clean) * 1e6 > self.config.max_abs_amplitude_uv,
+            axis=1,
+        )
+        max_abs_uv = float(np.nanmax(np.abs(clean)) * 1e6)
+        flat_mask = channel_std_uv < 0.1
+        flat_names = [
+            name
+            for name, is_flat in zip(recording.channel_names, flat_mask, strict=True)
+            if is_flat
+        ]
+        excessive_names = [
+            name
+            for name, value in zip(
+                recording.channel_names, channel_p99_abs_uv, strict=True
+            )
+            if value > self.config.max_abs_amplitude_uv
+        ]
+        freqs, psd = signal.welch(
+            clean,
+            fs=recording.sfreq_hz,
+            nperseg=min(clean.shape[1], max(32, int(recording.sfreq_hz * 2))),
+            axis=1,
+        )
+        upper = min(40.0, recording.sfreq_hz / 2 * 0.95)
+        total_power = self._integrate(freqs, psd, 1.0, upper)
+        line_low = max(1.0, self.config.notch_hz - 1.0)
+        line_high = min(upper, self.config.notch_hz + 1.0)
+        line_ratio = (
+            self._integrate(freqs, psd, line_low, line_high)
+            / np.maximum(total_power, np.finfo(float).eps)
+            if line_high > line_low
+            else np.zeros(data.shape[0])
+        )
+        high_low = min(30.0, upper)
+        high_ratio = (
+            self._integrate(freqs, psd, high_low, upper)
+            / np.maximum(total_power, np.finfo(float).eps)
+            if upper > high_low
+            else np.zeros(data.shape[0])
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr = np.corrcoef(clean) if data.shape[0] > 1 else np.ones((1, 1))
+        off_diagonal = corr[np.triu_indices_from(corr, k=1)]
+        finite_correlations = np.abs(off_diagonal[np.isfinite(off_diagonal)])
+        median_abs_corr = (
+            float(np.median(finite_correlations)) if finite_correlations.size else 0.0
+        )
         issues: list[str] = []
+        warnings: list[str] = []
         if finite_ratio < 1.0:
             issues.append("non-finite signal samples detected")
-        if flat_channels:
-            issues.append(f"{flat_channels} flat or near-flat channels detected")
-        if max_abs_uv > self.config.max_abs_amplitude_uv:
-            issues.append("amplitude exceeds configured artifact threshold")
+        if flat_names:
+            warnings.append(f"{len(flat_names)} flat or near-flat channels detected")
+        if excessive_names:
+            warnings.append(
+                f"{len(excessive_names)} channels exceed the robust amplitude threshold"
+            )
         if recording.duration_seconds < self.config.min_duration_seconds:
             issues.append("recording is shorter than configured minimum duration")
         if data.shape[0] < self.config.min_channels:
             issues.append("recording has fewer channels than configured minimum")
+        usable_channels = data.shape[0] - len(flat_names)
+        if usable_channels < self.config.min_channels:
+            issues.append("too few usable EEG channels remain after flat-channel screening")
+        quality_status = "blocked" if issues else ("review" if warnings else "pass")
         return {
-            "quality_status": "pass" if not issues else "blocked",
+            "quality_status": quality_status,
             "finite_sample_ratio": round(finite_ratio, 8),
-            "flat_channel_count": flat_channels,
+            "flat_channel_count": len(flat_names),
+            "flat_channels": flat_names,
+            "excessive_amplitude_channels": excessive_names,
             "max_abs_amplitude_uv": round(max_abs_uv, 6),
+            "median_p99_abs_amplitude_uv": round(
+                float(np.nanmedian(channel_p99_abs_uv)), 6
+            ),
+            "max_artifact_sample_fraction": round(
+                float(np.nanmax(channel_artifact_fraction)), 8
+            ),
+            "median_line_noise_ratio": round(float(np.nanmedian(line_ratio)), 8),
+            "median_high_frequency_ratio": round(float(np.nanmedian(high_ratio)), 8),
+            "median_absolute_channel_correlation": round(median_abs_corr, 8),
+            "usable_channel_count": usable_channels,
             "issue_count": len(issues),
             "issues": issues,
+            "warning_count": len(warnings),
+            "warnings": warnings,
             "synthetic": recording.synthetic,
             "pipeline_version": self.config.version,
         }
@@ -103,7 +188,10 @@ class EEGSignalAdapter:
             "highpass_hz": self.config.highpass_hz,
             "lowpass_hz": self.config.lowpass_hz,
             "notch_hz": self.config.notch_hz,
-            "normalization": "per-channel mean centering only; amplitudes remain volts",
+            "normalization": "per-channel mean centering and configured rereferencing; amplitudes remain volts",
+            "reference": self.config.reference,
+            "excluded_auxiliary_channels": list(recording.auxiliary_channel_names),
+            "excluded_reference_channels": list(recording.reference_channel_names),
             "synthetic": recording.synthetic,
         }
 
@@ -150,7 +238,21 @@ class EEGSignalAdapter:
             features[f"{name}_relative_power"] = float(np.mean(relative[name]))
             features[f"{name}_relative_power_std"] = float(np.std(relative[name]))
 
-        channel_lookup = {name.upper(): index for index, name in enumerate(recording.channel_names)}
+        channel_lookup = {
+            self._normalize_channel_name(name).upper(): index
+            for index, name in enumerate(recording.channel_names)
+        }
+        global_band_power = {
+            name: round(float(np.mean(values)), 9) for name, values in relative.items()
+        }
+        regional_band_power: dict[str, dict[str, float]] = {}
+        for region, candidates in self.regions.items():
+            indices = [channel_lookup[name] for name in candidates if name in channel_lookup]
+            if indices:
+                regional_band_power[region] = {
+                    band: round(float(np.mean(values[indices])), 9)
+                    for band, values in relative.items()
+                }
         parietal_indices = [
             channel_lookup[name]
             for name in ("P3", "P4", "O1", "O2")
@@ -179,6 +281,96 @@ class EEGSignalAdapter:
             theta_mask = (f_coh >= 4.0) & (f_coh < 8.0)
             features["theta_coh"] = float(np.mean(coherence[theta_mask]))
 
+        rms_uv = np.sqrt(np.mean(np.square(flattened), axis=1)) * 1e6
+        peak_to_peak_uv = np.ptp(flattened, axis=1) * 1e6
+        variance = np.var(flattened, axis=1)
+        diff1 = np.diff(flattened, axis=1)
+        diff2 = np.diff(diff1, axis=1)
+        mobility = np.sqrt(np.var(diff1, axis=1) / np.maximum(variance, np.finfo(float).eps))
+        diff_mobility = np.sqrt(
+            np.var(diff2, axis=1)
+            / np.maximum(np.var(diff1, axis=1), np.finfo(float).eps)
+        )
+        complexity = diff_mobility / np.maximum(mobility, np.finfo(float).eps)
+        temporal_summary = {
+            "rms_uv_median": round(float(np.median(rms_uv)), 6),
+            "rms_uv_iqr": round(
+                float(np.percentile(rms_uv, 75) - np.percentile(rms_uv, 25)), 6
+            ),
+            "peak_to_peak_uv_median": round(float(np.median(peak_to_peak_uv)), 6),
+            "hjorth_activity_median": round(float(np.median(variance)), 12),
+            "hjorth_mobility_median": round(float(np.median(mobility)), 9),
+            "hjorth_complexity_median": round(float(np.median(complexity)), 9),
+        }
+
+        asymmetry: dict[str, dict[str, float]] = {}
+        for left_name, right_name in (
+            ("FP1", "FP2"),
+            ("F3", "F4"),
+            ("C3", "C4"),
+            ("P3", "P4"),
+            ("O1", "O2"),
+        ):
+            if left_name not in channel_lookup or right_name not in channel_lookup:
+                continue
+            left_index = channel_lookup[left_name]
+            right_index = channel_lookup[right_name]
+            asymmetry[f"{left_name}-{right_name}"] = {
+                band: round(
+                    float(
+                        math.log(max(values[right_index], np.finfo(float).eps))
+                        - math.log(max(values[left_index], np.finfo(float).eps))
+                    ),
+                    9,
+                )
+                for band, values in relative.items()
+                if band in {"theta", "alpha", "beta"}
+            }
+
+        correlation = np.corrcoef(flattened)
+        correlation_values = correlation[np.triu_indices_from(correlation, k=1)]
+        connectivity_summary = {
+            "mean_absolute_correlation": round(
+                float(np.nanmean(np.abs(correlation_values))), 9
+            )
+            if correlation_values.size
+            else 1.0,
+            "median_absolute_correlation": round(
+                float(np.nanmedian(np.abs(correlation_values))), 9
+            )
+            if correlation_values.size
+            else 1.0,
+            "theta_p3_p4_coherence": round(float(features["theta_coh"]), 9)
+            if "theta_coh" in features
+            else None,
+        }
+
+        epoch_band_values: dict[str, list[float]] = {name: [] for name in self.bands}
+        for epoch in epochs:
+            epoch_freqs, epoch_psd = signal.welch(
+                epoch,
+                fs=recording.sfreq_hz,
+                nperseg=min(epoch.shape[1], int(recording.sfreq_hz * 2)),
+                axis=1,
+            )
+            epoch_total = self._integrate(epoch_freqs, epoch_psd, 0.5, 40.0)
+            for band, (low, high) in self.bands.items():
+                epoch_absolute = self._integrate(epoch_freqs, epoch_psd, low, high)
+                epoch_relative = epoch_absolute / np.maximum(
+                    epoch_total, np.finfo(float).eps
+                )
+                epoch_band_values[band].append(float(np.mean(epoch_relative)))
+        stability = {
+            band: {
+                "median": round(float(np.median(values)), 9),
+                "iqr": round(
+                    float(np.percentile(values, 75) - np.percentile(values, 25)), 9
+                ),
+            }
+            for band, values in epoch_band_values.items()
+            if values
+        }
+
         clean_features = {
             key: round(value, 9)
             for key, value in features.items()
@@ -192,6 +384,101 @@ class EEGSignalAdapter:
             "pipeline_version": self.config.version,
             "synthetic": recording.synthetic,
             "feature_semantics": "recording-level deterministic spectral summaries",
+            "assessment_summary": {
+                "global_relative_band_power": global_band_power,
+                "regional_relative_band_power": regional_band_power,
+                "temporal": temporal_summary,
+                "asymmetry_log_power_ratio": asymmetry,
+                "connectivity": connectivity_summary,
+                "window_stability": stability,
+                "channel_count": len(recording.channel_names),
+                "channel_names": recording.channel_names,
+                "duration_seconds": round(recording.duration_seconds, 6),
+                "sampling_rate_hz": round(recording.sfreq_hz, 6),
+            },
+        }
+
+    def build_asd_profile(self, state: AssessmentCaseState) -> dict[str, Any]:
+        """Build a typed, non-diagnostic profile from deterministic EEG summaries."""
+        quality = self.quality(state)
+        extracted = self.extract_features(state)
+        summary = extracted["assessment_summary"]
+        assert isinstance(summary, dict)
+        subject_context = {
+            key: state.metadata_summary[key]
+            for key in ("age", "sex", "recording_state")
+            if key in state.metadata_summary
+        }
+        missing_context = [
+            key for key in ("age", "recording_state") if key not in subject_context
+        ]
+        band_power = summary["global_relative_band_power"]
+        dominant_band = max(band_power, key=band_power.get)
+        asymmetry = summary["asymmetry_log_power_ratio"]
+        asymmetry_values = [
+            (pair, band, float(value))
+            for pair, values in asymmetry.items()
+            for band, value in values.items()
+        ]
+        largest_asymmetry = (
+            max(asymmetry_values, key=lambda item: abs(item[2]))
+            if asymmetry_values
+            else None
+        )
+        research_highlights = [
+            (
+                f"有 {len(quality['excessive_amplitude_channels'])} 个通道需要质量复核，"
+                "复核前不宜进行个体层面的结果解释。"
+                if quality["quality_status"] == "review"
+                else f"信号质量门控结果为 {quality['quality_status']}。"
+            ),
+            (
+                f"全程记录中占比最高的相对频带功率为 {dominant_band} "
+                f"（{float(band_power[dominant_band]):.3f}）。"
+            ),
+        ]
+        if largest_asymmetry is not None:
+            pair, band, value = largest_asymmetry
+            research_highlights.append(
+                f"左右同源通道中最大的对数功率差异为 {pair} 的 {band} 频带"
+                f"（{value:.3f}）；该结果仅为描述性指标，不是诊断阈值。"
+            )
+        return {
+            "profile_version": "asd-eeg-profile-v1.0",
+            "profile_status": "limited" if quality["quality_status"] == "blocked" else "available",
+            "quality_status": quality["quality_status"],
+            "quality_summary": {
+                "usable_channel_count": quality["usable_channel_count"],
+                "flat_channels": quality["flat_channels"],
+                "excessive_amplitude_channels": quality["excessive_amplitude_channels"],
+                "median_line_noise_ratio": quality["median_line_noise_ratio"],
+                "warnings": quality["warnings"],
+                "issues": quality["issues"],
+            },
+            "recording_summary": {
+                "channel_count": summary["channel_count"],
+                "channel_names": summary["channel_names"],
+                "duration_seconds": summary["duration_seconds"],
+                "analysis_sampling_rate_hz": summary["sampling_rate_hz"],
+                "epoch_count": extracted["epoch_count"],
+                "epoch_seconds": self.config.epoch_seconds,
+            },
+            "spectral_summary": {
+                "global_relative_band_power": summary["global_relative_band_power"],
+                "regional_relative_band_power": summary["regional_relative_band_power"],
+                "window_stability": summary["window_stability"],
+            },
+            "temporal_summary": summary["temporal"],
+            "asymmetry_summary": summary["asymmetry_log_power_ratio"],
+            "connectivity_summary": summary["connectivity"],
+            "research_highlights": research_highlights,
+            "subject_context": subject_context,
+            "missing_context": missing_context,
+            "interpretation_scope": (
+                "Descriptive EEG research profile only; ASD-related meaning requires external "
+                "evidence and cannot establish diagnosis, severity, or functional ability."
+            ),
+            "synthetic": extracted["synthetic"],
         }
 
     def load_case(self, state: AssessmentCaseState) -> EEGRecording:
@@ -215,6 +502,8 @@ class EEGSignalAdapter:
     def preprocess(self, recording: EEGRecording) -> EEGRecording:
         data = np.asarray(recording.data_v, dtype=np.float64)
         data = signal.detrend(data, axis=1, type="constant")
+        if self.config.reference == "average" and data.shape[0] > 1:
+            data = data - np.mean(data, axis=0, keepdims=True)
         nyquist = recording.sfreq_hz / 2
         high = min(self.config.lowpass_hz, nyquist * 0.95)
         if high <= self.config.highpass_hz:
@@ -245,6 +534,8 @@ class EEGSignalAdapter:
             source_format=recording.source_format,
             synthetic=recording.synthetic,
             unit_assumption=recording.unit_assumption,
+            auxiliary_channel_names=recording.auxiliary_channel_names,
+            reference_channel_names=recording.reference_channel_names,
         )
 
     def extract_events(self, recording: EEGRecording) -> tuple[np.ndarray, str]:
@@ -377,7 +668,22 @@ class EEGSignalAdapter:
                 parsed[key] = [handle.read(width).decode("latin-1").strip() for _ in range(signal_count)]
             samples = [int(value) for value in parsed["samples"]]
             rates = [value / record_duration for value in samples]
-            data_indices = [i for i, label in enumerate(parsed["labels"]) if label != "EDF Annotations"]
+            data_indices = [
+                index
+                for index, label in enumerate(parsed["labels"])
+                if not self._is_auxiliary_channel(label)
+            ]
+            auxiliary_indices = [
+                index for index in range(signal_count) if index not in data_indices
+            ]
+            reference_indices = [
+                index
+                for index in data_indices
+                if self._is_reference_channel(parsed["labels"][index])
+            ]
+            data_indices = [index for index in data_indices if index not in reference_indices]
+            if not data_indices:
+                raise ValueError("EDF contains no EEG signal channels")
             unique_rates = {rates[index] for index in data_indices}
             if len(unique_rates) != 1:
                 raise ValueError("EDF channels with mixed sampling rates are not supported in V1")
@@ -403,12 +709,52 @@ class EEGSignalAdapter:
         return EEGRecording(
             data_v=data,
             sfreq_hz=float(unique_rates.pop()),
-            channel_names=[parsed["labels"][index] for index in data_indices],
+            channel_names=[
+                self._normalize_channel_name(parsed["labels"][index])
+                for index in data_indices
+            ],
             events=np.empty((0, 2), dtype=np.int64),
             source_format="edf",
             synthetic=False,
             unit_assumption="edf_physical_dimension",
+            auxiliary_channel_names=tuple(
+                parsed["labels"][index]
+                for index in auxiliary_indices
+                if index not in reference_indices
+            ),
+            reference_channel_names=tuple(
+                parsed["labels"][index] for index in reference_indices
+            ),
         )
+
+    @staticmethod
+    def _normalize_channel_name(name: str) -> str:
+        normalized = name.strip()
+        if normalized.upper().startswith("EEG "):
+            normalized = normalized[4:]
+        for suffix in ("-REF", "-LE"):
+            if normalized.upper().endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+        return normalized.replace(" ", "")
+
+    @classmethod
+    def _is_auxiliary_channel(cls, name: str) -> bool:
+        normalized = cls._normalize_channel_name(name).upper()
+        compact = normalized.replace("_", "").replace("-", "")
+        return compact in {
+            "STATUS",
+            "EDFANNOTATIONS",
+            "ANNOTATIONS",
+            "EVENT",
+            "EVENTMARKER",
+            "TRIGGER",
+            "STIM",
+        } or compact.startswith(("EOG", "ECG", "EKG", "EMG", "RESP", "TEMP"))
+
+    @classmethod
+    def _is_reference_channel(cls, name: str) -> bool:
+        normalized = cls._normalize_channel_name(name).upper()
+        return normalized in {"A1", "A2", "M1", "M2"}
 
     @staticmethod
     def _as_channels_first(data: np.ndarray) -> np.ndarray:
@@ -431,7 +777,10 @@ class EEGSignalAdapter:
     @staticmethod
     def _integrate(freqs: np.ndarray, psd: np.ndarray, low: float, high: float) -> np.ndarray:
         mask = (freqs >= low) & (freqs < high)
-        return np.asarray(np.trapezoid(psd[:, mask], freqs[mask], axis=1))
+        if not np.any(mask):
+            return np.zeros(psd.shape[0])
+        integrate = getattr(np, "trapezoid", np.trapz)
+        return np.asarray(integrate(psd[:, mask], freqs[mask], axis=1))
 
     @staticmethod
     def _higuchi_fd(values: np.ndarray, k_max: int = 8) -> float:

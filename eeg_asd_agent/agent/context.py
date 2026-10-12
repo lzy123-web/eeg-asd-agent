@@ -97,6 +97,8 @@ class AgentContextBuilder:
                 "RAG may be used before, during, or after signal/model analysis when relevant.",
                 "Never expose raw EEG, feature values, local paths, secrets, or internal ToolResult objects.",
                 "Finish only when the user goal is satisfied by executed observations.",
+                "For full_assessment, generate_report_spec and render_report must succeed before finishing.",
+                "A no-tool action is legal only when goal_satisfied is true.",
                 "Do not make a clinical ASD diagnosis or treatment prescription.",
             ],
         }

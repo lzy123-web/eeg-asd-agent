@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import math
 import os
+import pickle
 import re
 from collections import Counter
 from pathlib import Path
@@ -11,6 +13,143 @@ from typing import Any
 from eeg_asd_agent.schemas import StructuredKnowledgeItem, StructuredKnowledgeResult
 
 DEFAULT_SENIOR_ROOT = Path("/Users/nick/eeg/迁移/daima/autodl_latest_data")
+DEFAULT_EEGAGENT_ROOT = Path(
+    r"D:\Profession\Programs\CANKAO\EEGAgent-main\EEGAgent-main"
+)
+
+
+class _DataOnlyUnpickler(pickle.Unpickler):
+    """Load EEGAgent's list-of-string chunk cache without allowing globals."""
+
+    def find_class(self, module: str, name: str) -> Any:
+        raise pickle.UnpicklingError(
+            f"global objects are forbidden in the EEGAgent chunk cache: {module}.{name}"
+        )
+
+
+class EEGAgentKnowledgeAdapter:
+    """Reuse EEGAgent's prepared knowledge chunks with deterministic BM25 ranking.
+
+    The reference repository's FAISS index requires an omitted BGE-M3 base-model
+    checkpoint plus optional torch/faiss dependencies. Its already prepared chunk
+    corpus is reusable, so this adapter preserves that knowledge asset and adds a
+    dependency-light lexical fallback with stable evidence identifiers.
+    """
+
+    mode = "eegagent_prepared_chunks_bm25"
+
+    def __init__(self, root: Path | None = None) -> None:
+        configured = os.environ.get("EEG_AGENT_REFERENCE_ROOT")
+        self.root = root or (Path(configured) if configured else DEFAULT_EEGAGENT_ROOT)
+        self.chunk_path = self.root / "RAG" / "chunks.pkl"
+        self._chunks: list[str] | None = None
+
+    def retrieve(self, query: str, limit: int = 5) -> StructuredKnowledgeResult:
+        chunks = self._load_chunks()
+        tokens = SeniorKnowledgeAdapter._tokens(query)
+        if not chunks or not tokens or limit <= 0:
+            return StructuredKnowledgeResult(query=query, items=[], mode=self.mode)
+        documents = [self._tokenize(chunk) for chunk in chunks]
+        average_length = sum(map(len, documents)) / max(1, len(documents))
+        document_frequency = {
+            token: sum(token in set(document) for document in documents)
+            for token in tokens
+        }
+        ranked: list[tuple[float, int, str]] = []
+        for index, (chunk, document) in enumerate(zip(chunks, documents, strict=True)):
+            counts = Counter(document)
+            score = 0.0
+            for token in tokens:
+                frequency = counts[token]
+                if not frequency:
+                    continue
+                inverse_document_frequency = math.log(
+                    1
+                    + (len(documents) - document_frequency[token] + 0.5)
+                    / (document_frequency[token] + 0.5)
+                )
+                denominator = frequency + 1.5 * (
+                    0.25 + 0.75 * len(document) / max(1.0, average_length)
+                )
+                score += inverse_document_frequency * frequency * 2.5 / denominator
+            if score > 0:
+                ranked.append((score, index, chunk))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        items = []
+        for score, index, chunk in ranked[:limit]:
+            digest = hashlib.sha256(chunk.encode("utf-8", errors="replace")).hexdigest()[:12]
+            title = " ".join(chunk.replace("\n", " ").split())[:120]
+            items.append(
+                StructuredKnowledgeItem(
+                    evidence_id=f"EEGAGENT-KB-{digest}",
+                    title=title or f"EEGAgent knowledge chunk {index}",
+                    source="EEGAgent:RAG/chunks.pkl",
+                    retrieved_chunk=chunk[:1200],
+                    summary=" ".join(chunk.replace("\n", " ").split())[:360],
+                    relevance=round(float(score), 6),
+                    metadata={
+                        "mode": self.mode,
+                        "chunk_index": index,
+                        "source_file": "RAG/chunks.pkl",
+                    },
+                    limitations=[
+                        "该条目复用 EEGAgent 预处理知识块，并以 BM25 词法相关性检索。",
+                        "背景知识不能替代当前个案的临床判读。",
+                    ],
+                )
+            )
+        return StructuredKnowledgeResult(query=query, items=items, mode=self.mode)
+
+    def _load_chunks(self) -> list[str]:
+        if self._chunks is not None:
+            return self._chunks
+        if not self.chunk_path.is_file():
+            self._chunks = []
+            return self._chunks
+        with self.chunk_path.open("rb") as handle:
+            raw = _DataOnlyUnpickler(handle).load()
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ValueError("EEGAgent RAG/chunks.pkl must contain only a list of strings")
+        self._chunks = [item.strip() for item in raw if item.strip()]
+        return self._chunks
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        return [
+            token.lower()
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]+|[\u4e00-\u9fff]{2,}", text)
+            if len(token) > 1
+        ]
+
+
+class CompositeKnowledgeAdapter:
+    """Combine optional ASD-specific exports with the reusable EEGAgent corpus."""
+
+    def __init__(
+        self,
+        asd_adapter: SeniorKnowledgeAdapter | None = None,
+        eeg_adapter: EEGAgentKnowledgeAdapter | None = None,
+    ) -> None:
+        self.asd_adapter = asd_adapter or SeniorKnowledgeAdapter()
+        self.eeg_adapter = eeg_adapter or EEGAgentKnowledgeAdapter()
+
+    def retrieve(self, query: str, limit: int = 5) -> StructuredKnowledgeResult:
+        asd_result = self.asd_adapter.retrieve(query, limit=limit)
+        remaining = max(0, limit - len(asd_result.items))
+        eeg_result = self.eeg_adapter.retrieve(query, limit=remaining)
+        modes = [
+            mode
+            for mode, items in (
+                (asd_result.mode, asd_result.items),
+                (eeg_result.mode, eeg_result.items),
+            )
+            if items
+        ]
+        return StructuredKnowledgeResult(
+            query=query,
+            items=[*asd_result.items, *eeg_result.items][:limit],
+            mode="+".join(modes) or "knowledge_unavailable",
+        )
 
 
 class SeniorOOFAdapter:

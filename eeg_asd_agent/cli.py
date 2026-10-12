@@ -12,6 +12,7 @@ from eeg_asd_agent.dashboard import build_dashboard
 from eeg_asd_agent.integrity import audit_integrity
 from eeg_asd_agent.providers import OpenAIResponsesProvider, ProviderConfigurationError
 from eeg_asd_agent.schemas import AssessmentCaseState
+from eeg_asd_agent.schemas import InputKind
 from eeg_asd_agent.tools.builtin import build_default_registry
 from eeg_asd_agent.tools.domain_catalog import build_agent_registry
 from eeg_asd_agent.tracing import render_trace_html
@@ -39,6 +40,16 @@ def _load_case(path: Path) -> AssessmentCaseState:
 def _load_provider(offline: bool) -> OpenAIResponsesProvider | None:
     if offline:
         return None
+
+
+def _require_llm_provider() -> OpenAIResponsesProvider:
+    try:
+        return OpenAIResponsesProvider.from_env()
+    except ProviderConfigurationError as exc:
+        raise typer.BadParameter(
+            "真实 LLM Agent 尚未配置。请设置 OPENAI_API_KEY、OPENAI_MODEL、"
+            "OPENAI_BASE_URL 和 OPENAI_API_STYLE；assess 命令不会降级到离线模式。"
+        ) from exc
     try:
         return OpenAIResponsesProvider.from_env()
     except ProviderConfigurationError as exc:
@@ -116,6 +127,48 @@ def run_command(
         provider=provider,
     )
     typer.echo(json.dumps({key: str(value) for key, value in artifacts.items()}, ensure_ascii=False, indent=2))
+
+
+@app.command("assess")
+def assess_command(
+    eeg: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_dir: Annotated[Path, typer.Option()] = Path("artifacts/assessment"),
+    case_id: Annotated[str | None, typer.Option()] = None,
+    age: Annotated[float | None, typer.Option(min=0.0, max=120.0)] = None,
+    sex: Annotated[str | None, typer.Option()] = None,
+    request: Annotated[str, typer.Option()] = (
+        "分析 EEG，形成 ASD 儿童研究性辅助评估报告"
+    ),
+) -> None:
+    """Run the real LLM Agent from one EEG file and generate a report."""
+    resolved_eeg = eeg.resolve()
+    metadata: dict[str, object] = {}
+    if age is not None:
+        metadata["age"] = age
+    if sex:
+        metadata["sex"] = sex
+    state = AssessmentCaseState(
+        case_id=case_id or resolved_eeg.stem,
+        input_type=InputKind.RAW_EEG,
+        raw_files=[str(resolved_eeg)],
+        modalities=["EEG"],
+        metadata_summary=metadata,
+    )
+    provider = _require_llm_provider()
+    artifacts = run_workflow(
+        state,
+        request,
+        output_dir,
+        planner_kind="agent",
+        provider=provider,
+    )
+    typer.echo(
+        json.dumps(
+            {key: str(value) for key, value in artifacts.items()},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 @app.command("resume")

@@ -7,6 +7,11 @@ __pycache__/
 .ruff_cache/
 artifacts/*
 !artifacts/.gitkeep
+.env
+.env.*
+!.env.example
+config/*secret*
+config/*credential*
 
 # macOS
 .DS_Store

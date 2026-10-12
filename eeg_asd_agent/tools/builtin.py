@@ -281,7 +281,8 @@ def build_default_registry() -> ToolRegistry:
 
         def band(low: float, high: float) -> float:
             mask = (frequencies >= low) & (frequencies < high)
-            return float(np.trapezoid(psd[mask], frequencies[mask]))
+            integrate = getattr(np, "trapezoid", np.trapz)
+            return float(integrate(psd[mask], frequencies[mask]))
 
         features = {
             "delta_power": round(band(1, 4), 8),

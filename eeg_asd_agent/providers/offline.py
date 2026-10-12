@@ -198,10 +198,16 @@ class OfflineProvider:
                 "extract_events",
                 "create_epochs",
                 "extract_eeg_features",
+                "build_eeg_asd_profile",
             ]
             if not has_raw_eeg:
                 signal_chain = ["check_data_quality"]
-            model_chain = ["check_model_readiness", "run_asd_baseline_model"]
+            # A descriptive EEG assessment report must not depend on an ASD classifier.
+            # Model tools remain available when a supplied result is being inspected or
+            # the request explicitly asks for model verification.
+            model_chain: list[str] = []
+            if verify_existing:
+                model_chain = ["check_model_readiness", "run_asd_baseline_model"]
             if explain_existing and not verify_existing:
                 model_chain = ["inspect_existing_model_result"]
             knowledge_chain = ["build_asd_rag_query", "retrieve_asd_knowledge"]
@@ -217,9 +223,9 @@ class OfflineProvider:
             }
 
         def is_pending(name: str) -> bool:
-            return name not in completed or (
-                name in force_repeat and name not in current_run_actions
-            )
+            if name in force_repeat:
+                return name not in current_run_actions
+            return name not in completed and name not in current_run_actions
 
         pending_preferred = [name for name in preferred if is_pending(name)]
         selected = next((name for name in pending_preferred if name in allowed), None)
@@ -344,6 +350,10 @@ class OfflineProvider:
         model_summary = "未执行或没有可白名单化的模型结果。"
         model_status = "unavailable"
         model_tools: list[str] = []
+        data_status = "insufficient"
+        data_summary = "尚未形成可用于报告的 EEG 结构化评估摘要。"
+        data_details: dict[str, object] = {}
+        data_tools: list[str] = []
         knowledge_summary = "知识检索未执行或没有返回可白名单化条目。"
         knowledge_status = "unavailable"
         evidence_ids: list[str] = []
@@ -372,6 +382,7 @@ class OfflineProvider:
             status = str(result["status"])
             if status != "success":
                 continue
+            data_tools.append(tool_name)
             visible = dict(cast(dict[str, object], result.get("visible_facts", {})))
             if tool_name in {
                 "run_asd_baseline_model",
@@ -383,6 +394,61 @@ class OfflineProvider:
                 meaning = str(visible.get("output_meaning", "仅限研究解释"))
                 model_summary = f"受限研究模型输出模式为 {pattern}；{meaning}"
                 model_tools.append(tool_name)
+            elif tool_name == "build_eeg_asd_profile":
+                data_status = str(visible.get("profile_status", "available"))
+                quality = str(visible.get("quality_status", "unknown"))
+                recording = visible.get("recording_summary", {})
+                spectral = visible.get("spectral_summary", {})
+                temporal = visible.get("temporal_summary", {})
+                asymmetry = visible.get("asymmetry_summary", {})
+                connectivity = visible.get("connectivity_summary", {})
+                subject_context = visible.get("subject_context", {})
+                quality_summary = visible.get("quality_summary", {})
+                highlights = visible.get("research_highlights", [])
+                data_details = {
+                    "patient_information": {
+                        "case_id": case_id,
+                        **(
+                            dict(subject_context)
+                            if isinstance(subject_context, dict)
+                            else {}
+                        ),
+                    },
+                    "history": {
+                        "reason_for_eeg": str(payload.get("user_request", "")),
+                        "relevant_clinical_information": "未提供",
+                    },
+                    "technical_description": recording,
+                    "eeg_description": {
+                        "background_activity": highlights,
+                        "artifacts_and_quality": quality_summary,
+                        "abnormal_findings": (
+                            "未执行临床异常判读；当前工具仅输出描述性定量特征。"
+                        ),
+                    },
+                    "impression": {
+                        "summary": "研究性 EEG 特征档案已生成。",
+                        "diagnostic_status": "不提供 ASD 诊断、排除诊断或严重程度判断。",
+                    },
+                    "clinical_correlation": {
+                        "interpretation": visible.get("interpretation_scope", ""),
+                        "recommendation": "结合临床量表、发育史及专业人员复核。",
+                    },
+                    "quality": quality_summary,
+                    "recording": recording,
+                    "spectral": spectral,
+                    "temporal": temporal,
+                    "asymmetry": asymmetry,
+                    "connectivity": connectivity,
+                    "research_highlights": highlights,
+                    "subject_context": subject_context,
+                    "missing_context": visible.get("missing_context", []),
+                    "interpretation_scope": visible.get("interpretation_scope", ""),
+                }
+                data_summary = (
+                    f"已生成非诊断性的 EEG 研究特征档案；数据质量状态为 {quality}。"
+                    "频谱、脑区、时域、左右差异和连接性结果均来自确定性信号处理工具。"
+                )
             elif tool_name == "check_model_readiness":
                 model_status = str(visible.get("readiness_status", model_status))
             elif tool_name == "retrieve_asd_knowledge":
@@ -418,18 +484,16 @@ class OfflineProvider:
                 str(item) for item in cast(list[object], payload.get("executed_workflows", []))
             ],
             "data_summary": {
-                "status": "available" if results else "insufficient",
-                "summary": "仅汇总已执行工具经白名单投影后的结构化结果。",
-                "source_tools": [
-                    str(cast(dict[str, object], item).get("tool_name", ""))
-                    for item in results
-                    if isinstance(item, dict)
-                ],
+                "status": data_status,
+                "summary": data_summary,
+                "source_tools": list(dict.fromkeys(data_tools)),
+                "details": data_details,
             },
             "model_assessment": {
                 "status": model_status,
                 "summary": model_summary,
                 "source_tools": model_tools,
+                "details": {},
             },
             "knowledge_interpretation": {
                 "status": knowledge_status,

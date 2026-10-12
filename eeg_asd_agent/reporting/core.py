@@ -145,7 +145,7 @@ class StructuredReportGenerator:
 class MarkdownRenderer:
     def render(self, report: FinalAssessmentReportSpec) -> str:
         lines = [
-            "# EEG-ASD 辅助工作流报告",
+            "# ASD 儿童 EEG 研究性辅助评估报告",
             "",
             f"**Case ID:** `{report.case_id}`",
             f"**Report type:** `{report.report_type}`",
@@ -158,6 +158,7 @@ class MarkdownRenderer:
             "",
             report.data_summary.summary,
             "",
+            *self._render_eeg_details(report.data_summary.details),
             "## 模型评估",
             "",
             report.model_assessment.summary,
@@ -188,6 +189,42 @@ class MarkdownRenderer:
         )
         return "\n".join(lines).rstrip() + "\n"
 
+    @staticmethod
+    def _render_eeg_details(details: dict[str, object]) -> list[str]:
+        if not details:
+            return []
+        lines = ["### EEG 结构化结果", ""]
+        labels = {
+            "patient_information": "I. 受试者信息",
+            "history": "II. 检查背景",
+            "technical_description": "III. 技术描述",
+            "eeg_description": "IV. EEG 描述",
+            "impression": "V. 研究性印象",
+            "clinical_correlation": "VI. 临床关联与建议",
+            "quality": "数据质量",
+            "recording": "记录信息",
+            "spectral": "频谱与脑区特征",
+            "temporal": "时域特征",
+            "asymmetry": "左右差异",
+            "connectivity": "连接性",
+            "research_highlights": "研究性结果摘要",
+            "subject_context": "受试者上下文",
+            "missing_context": "缺失上下文",
+            "interpretation_scope": "解释范围",
+        }
+        for key, value in details.items():
+            lines.extend(
+                [
+                    f"#### {labels.get(key, key)}",
+                    "",
+                    "```json",
+                    json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+                    "```",
+                    "",
+                ]
+            )
+        return lines
+
 
 class HTMLRenderer:
     _template = """<!doctype html>
@@ -204,6 +241,7 @@ code{background:#eef2f7;padding:2px 5px;border-radius:4px}
 <div class="meta">Case <code>{{ report.case_id }}</code> · type <code>{{ report.report_type }}</code></div>
 <h2>请求摘要</h2><p>{{ report.request_summary }}</p>
 <h2>数据摘要</h2><p>{{ report.data_summary.summary }}</p>
+{% if details_json %}<h3>EEG 结构化结果</h3><pre>{{ details_json }}</pre>{% endif %}
 <h2>模型评估</h2><p>{{ report.model_assessment.summary }}</p>
 <h2>知识解释</h2><p>{{ report.knowledge_interpretation.summary }}</p>
 <h3>Evidence IDs</h3><ul>
@@ -221,4 +259,16 @@ code{background:#eef2f7;padding:2px 5px;border-radius:4px}
 
     def render(self, report: FinalAssessmentReportSpec) -> str:
         template = self.environment.from_string(self._template)
-        return template.render(report=report)
+        return template.render(
+            report=report,
+            details_json=(
+                json.dumps(
+                    report.data_summary.details,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                if report.data_summary.details
+                else ""
+            ),
+        )

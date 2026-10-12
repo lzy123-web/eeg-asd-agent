@@ -37,13 +37,6 @@ DOMAIN_CAPABILITY_STUBS = (
         ("The user asks for an EEG pattern or biomarker-oriented analysis.",),
     ),
     DomainCapabilityStub(
-        "build_eeg_asd_profile",
-        "assessment",
-        "Synthesize executed EEG observations into a typed research assessment profile.",
-        ("profile", "source_observations", "limitations"),
-        ("The Agent needs a case-level EEG-ASD research profile before retrieval or reporting.",),
-    ),
-    DomainCapabilityStub(
         "estimate_asd_severity",
         "assessment",
         "Run a versioned research-only ASD severity estimator when a validated model is available.",

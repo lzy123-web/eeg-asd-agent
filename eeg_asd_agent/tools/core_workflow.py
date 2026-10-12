@@ -4,8 +4,8 @@ import math
 from typing import Any, Protocol
 
 from eeg_asd_agent.adapters import (
+    CompositeKnowledgeAdapter,
     EEGSignalAdapter,
-    SeniorKnowledgeAdapter,
     SeniorMLPBaselineAdapter,
     SeniorOOFAdapter,
 )
@@ -170,7 +170,7 @@ def build_core_registry(
 ) -> ToolRegistry:
     registry = ToolRegistry()
     provider = report_provider or OfflineReportGenerator()
-    knowledge = knowledge_adapter or SeniorKnowledgeAdapter()
+    knowledge = knowledge_adapter or CompositeKnowledgeAdapter()
     oof = oof_adapter or SeniorOOFAdapter()
     eeg = eeg_adapter or EEGSignalAdapter()
     baseline = baseline_adapter or SeniorMLPBaselineAdapter()
@@ -225,6 +225,10 @@ def build_core_registry(
             "duration_seconds",
             "event_count",
             "unit_assumption",
+            "channel_names",
+            "auxiliary_channel_names",
+            "reference_channel_names",
+            "montage_family",
         ],
         allowlisted_fields=[
             "pipeline_version",
@@ -236,14 +240,18 @@ def build_core_registry(
             "duration_seconds",
             "event_count",
             "unit_assumption",
+            "channel_names",
+            "auxiliary_channel_names",
+            "reference_channel_names",
+            "montage_family",
         ],
         implementation=ImplementationKind.REAL,
         repeatable=True,
         goals=eeg_goals,
         preconditions=["raw_eeg_present", "case_inspected"],
         limitations=[
-            "Synthetic recordings are workflow fixtures and are not participant evidence.",
-            "V1 supports synthetic URI, NPZ, MAT, and equal-rate EDF input only.",
+            "Synthetic recordings, when used, are workflow fixtures and not participant evidence.",
+            "V2 supports synthetic URI, NPZ, MAT, and equal-rate EEG channels in EDF input.",
         ],
     )
 
@@ -273,9 +281,19 @@ def build_core_registry(
             "quality_status",
             "finite_sample_ratio",
             "flat_channel_count",
+            "flat_channels",
+            "excessive_amplitude_channels",
             "max_abs_amplitude_uv",
+            "median_p99_abs_amplitude_uv",
+            "max_artifact_sample_fraction",
+            "median_line_noise_ratio",
+            "median_high_frequency_ratio",
+            "median_absolute_channel_correlation",
+            "usable_channel_count",
             "issue_count",
             "issues",
+            "warning_count",
+            "warnings",
             "synthetic",
             "pipeline_version",
         ],
@@ -283,9 +301,19 @@ def build_core_registry(
             "quality_status",
             "finite_sample_ratio",
             "flat_channel_count",
+            "flat_channels",
+            "excessive_amplitude_channels",
             "max_abs_amplitude_uv",
+            "median_p99_abs_amplitude_uv",
+            "max_artifact_sample_fraction",
+            "median_line_noise_ratio",
+            "median_high_frequency_ratio",
+            "median_absolute_channel_correlation",
+            "usable_channel_count",
             "issue_count",
             "issues",
+            "warning_count",
+            "warnings",
             "synthetic",
             "pipeline_version",
         ],
@@ -323,6 +351,9 @@ def build_core_registry(
             "lowpass_hz",
             "notch_hz",
             "normalization",
+            "reference",
+            "excluded_auxiliary_channels",
+            "excluded_reference_channels",
             "synthetic",
         ],
         allowlisted_fields=[
@@ -333,6 +364,9 @@ def build_core_registry(
             "lowpass_hz",
             "notch_hz",
             "normalization",
+            "reference",
+            "excluded_auxiliary_channels",
+            "excluded_reference_channels",
             "synthetic",
         ],
         implementation=ImplementationKind.REAL,
@@ -343,7 +377,7 @@ def build_core_registry(
             "data_quality_pass",
             "eeg_quality_checked",
         ],
-        limitations=["Processing parameters are fixed by the versioned eeg-v1.0 profile."],
+        limitations=["Processing parameters are fixed by the versioned eeg-v2.0 profile."],
     )
 
     def preprocess_eeg(
@@ -445,6 +479,7 @@ def build_core_registry(
             "pipeline_version",
             "synthetic",
             "feature_semantics",
+            "assessment_summary",
         ],
         allowlisted_fields=[
             "feature_count",
@@ -453,6 +488,16 @@ def build_core_registry(
             "pipeline_version",
             "synthetic",
             "feature_semantics",
+            "assessment_summary.global_relative_band_power",
+            "assessment_summary.regional_relative_band_power",
+            "assessment_summary.temporal",
+            "assessment_summary.asymmetry_log_power_ratio",
+            "assessment_summary.connectivity",
+            "assessment_summary.window_stability",
+            "assessment_summary.channel_count",
+            "assessment_summary.channel_names",
+            "assessment_summary.duration_seconds",
+            "assessment_summary.sampling_rate_hz",
         ],
         implementation=ImplementationKind.REAL,
         repeatable=True,
@@ -489,6 +534,73 @@ def build_core_registry(
         )
 
     registry.register(FunctionTool(feature_manifest, extract_eeg_features))
+
+    profile_manifest = _manifest(
+        "build_eeg_asd_profile",
+        version="asd-eeg-profile-v1.0",
+        category="assessment",
+        produced_outputs=[
+            "profile_version",
+            "profile_status",
+            "quality_status",
+            "quality_summary",
+            "recording_summary",
+            "spectral_summary",
+            "temporal_summary",
+            "asymmetry_summary",
+            "connectivity_summary",
+            "research_highlights",
+            "subject_context",
+            "missing_context",
+            "interpretation_scope",
+            "synthetic",
+        ],
+        allowlisted_fields=[
+            "profile_version",
+            "profile_status",
+            "quality_status",
+            "quality_summary",
+            "recording_summary",
+            "spectral_summary",
+            "temporal_summary",
+            "asymmetry_summary",
+            "connectivity_summary",
+            "research_highlights",
+            "subject_context",
+            "missing_context",
+            "interpretation_scope",
+            "synthetic",
+        ],
+        implementation=ImplementationKind.REAL,
+        goals=[RequestedGoal.FULL_ASSESSMENT, RequestedGoal.REPORT_ONLY],
+        preconditions=["raw_eeg_present", "features_extracted"],
+        repeatable=True,
+        description=(
+            "Synthesize deterministic EEG quality, spectral, temporal, asymmetry, and "
+            "connectivity summaries into a non-diagnostic ASD research profile."
+        ),
+        limitations=[
+            "This descriptive profile is not an ASD classifier and cannot estimate severity or ability.",
+            "Age and recording-state context are reported as unavailable when not supplied.",
+        ],
+    )
+
+    def build_eeg_asd_profile(
+        state: AssessmentCaseState, _: dict[str, object]
+    ) -> ToolExecutionOutcome:
+        profile = eeg.build_asd_profile(state)
+        return _outcome(
+            profile_manifest,
+            ToolStatus.SUCCESS,
+            data=profile,
+            limitations=(
+                ["Profile was generated from deterministic synthetic EEG."]
+                if profile["synthetic"]
+                else []
+            ),
+        )
+
+    registry.register(FunctionTool(profile_manifest, build_eeg_asd_profile))
 
     quality_manifest = _manifest(
         "check_data_quality",
@@ -894,8 +1006,8 @@ def build_core_registry(
             "The Agent needs external ASD/EEG knowledge for planning, interpretation, or reporting."
         ],
         limitations=[
-            "检索复用师兄 AbilityKG 的 Ability-Dimension-Task 图谱路径，并联合其 PubMed 导出语料。",
-            "配置 Neo4j 环境变量时优先查询师兄图数据库；否则遍历同一图谱的只读 CSV 导出。",
+            "优先复用 ASD 专用知识导出，并以 EEGAgent 的既有知识块补足 EEG 报告背景。",
+            "EEGAgent 的 FAISS/BGE 权重不完整时，使用同一 chunks.pkl 语料的 BM25 检索。",
             "Retrieved background knowledge is not participant-level evidence.",
         ],
     )
